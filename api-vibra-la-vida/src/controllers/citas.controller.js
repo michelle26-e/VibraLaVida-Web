@@ -49,6 +49,98 @@ const esPaciente = (usuario) => {
 
 
 // ----------------------------------------------------------
+// CREAR NOTIFICACIÓN PARA EL PROFESIONAL
+// ----------------------------------------------------------
+//
+// Se ejecuta desde Express, por eso funciona igual
+// si la acción viene de Android o de la web.
+// ----------------------------------------------------------
+
+const crearNotificacionProfesional = async ({
+  profesionalUid,
+  pacienteUid,
+  citaId,
+  tipo,
+  titulo,
+  mensaje,
+  detalle = '',
+}) => {
+  try {
+    if (!profesionalUid) {
+      return
+    }
+
+    await db
+      .collection('notificaciones_profesional')
+      .add({
+        profesionalUid,
+        pacienteUid:
+          pacienteUid || null,
+
+        citaId:
+          citaId || null,
+
+        tipo,
+        titulo,
+        mensaje,
+        detalle,
+
+        leida:
+          false,
+
+        creadoEn:
+          FieldValue.serverTimestamp(),
+      })
+
+  } catch (error) {
+    console.error(
+      'No fue posible crear la notificación:',
+      error
+    )
+  }
+}
+
+
+// ----------------------------------------------------------
+// COMPROBAR AUTENTICACIÓN RECIENTE
+// ----------------------------------------------------------
+//
+// Firebase incluye auth_time en el ID Token.
+// Después de reauthenticateWithCredential() el frontend
+// solicita un token nuevo.
+//
+// Exigimos que esa autenticación haya ocurrido hace
+// menos de 2 minutos para confirmar una cita.
+// ----------------------------------------------------------
+
+const tieneAutenticacionReciente = (
+  usuarioToken,
+  maxSegundos = 120
+) => {
+  const authTime =
+    Number(
+      usuarioToken?.auth_time
+    )
+
+  if (
+    !Number.isFinite(authTime)
+  ) {
+    return false
+  }
+
+  const ahora =
+    Math.floor(
+      Date.now() / 1000
+    )
+
+  return (
+    ahora - authTime <=
+    maxSegundos
+  )
+}
+
+
+// ----------------------------------------------------------
 // CONVERTIR FECHA/HORA A MILISEGUNDOS PARA ORDENAR
 // ----------------------------------------------------------
 
@@ -457,6 +549,18 @@ const actualizarCita = async (req, res) => {
       ) {
 
         if (
+          !tieneAutenticacionReciente(
+            req.user
+          )
+        ) {
+          return res.status(401).json({
+            success: false,
+            message:
+              'Por seguridad, confirma nuevamente tu contraseña antes de confirmar la cita.',
+          })
+        }
+
+        if (
           citaActual.estado !==
           'pendiente'
         ) {
@@ -473,6 +577,12 @@ const actualizarCita = async (req, res) => {
 
           fechaConfirmacionPaciente:
             FieldValue.serverTimestamp(),
+
+          confirmadoPorPaciente:
+            uid,
+
+          metodoConfirmacion:
+            'contrasena',
 
           actualizadoEn:
             FieldValue.serverTimestamp(),
@@ -662,6 +772,23 @@ const confirmarCitaPaciente = async (req, res) => {
       })
     }
 
+    // La interfaz reautentica al paciente con su contraseña
+    // antes de llamar este endpoint.
+    //
+    // Aquí comprobamos que el token de Firebase realmente
+    // corresponda a una autenticación reciente.
+    if (
+      !tieneAutenticacionReciente(
+        req.user
+      )
+    ) {
+      return res.status(401).json({
+        success: false,
+        message:
+          'Por seguridad, confirma nuevamente tu contraseña antes de confirmar la cita.',
+      })
+    }
+
     const citaRef =
       db.collection('citas').doc(req.params.id)
 
@@ -705,8 +832,31 @@ const confirmarCitaPaciente = async (req, res) => {
       confirmadoPorPaciente:
         uid,
 
+      metodoConfirmacion:
+        'contrasena',
+
       actualizadoEn:
         FieldValue.serverTimestamp(),
+    })
+
+    await crearNotificacionProfesional({
+      profesionalUid:
+        citaActual.especialistaUid,
+
+      pacienteUid:
+        uid,
+
+      citaId:
+        citaRef.id,
+
+      tipo:
+        'cita_confirmada',
+
+      titulo:
+        'Cita confirmada',
+
+      mensaje:
+        `${citaActual.nombrePaciente || 'El paciente'} confirmó su cita del ${citaActual.fecha || ''} a las ${citaActual.hora || ''}.`,
     })
 
     const actualizada =
@@ -813,6 +963,31 @@ const cancelarCitaPaciente = async (req, res) => {
         FieldValue.serverTimestamp(),
     })
 
+    await crearNotificacionProfesional({
+      profesionalUid:
+        citaActual.especialistaUid,
+
+      pacienteUid:
+        uid,
+
+      citaId:
+        citaRef.id,
+
+      tipo:
+        'cita_cancelada',
+
+      titulo:
+        'Cita cancelada',
+
+      mensaje:
+        `${citaActual.nombrePaciente || 'El paciente'} canceló su cita del ${citaActual.fecha || ''} a las ${citaActual.hora || ''}.`,
+
+      detalle:
+        motivoCancelacion
+          ? `Motivo: ${motivoCancelacion}`
+          : 'El paciente no indicó un motivo.',
+    })
+
     const actualizada =
       await citaRef.get()
 
@@ -902,6 +1077,16 @@ const solicitarReagendaPaciente = async (req, res) => {
         req.body?.motivoReagenda || ''
       ).trim()
 
+    const fechaSolicitadaPaciente =
+      String(
+        req.body?.fechaSolicitada || ''
+      ).trim()
+
+    const horaSolicitadaPaciente =
+      String(
+        req.body?.horaSolicitada || ''
+      ).trim()
+
     if (motivoReagenda.length < 5) {
       return res.status(400).json({
         success: false,
@@ -911,11 +1096,14 @@ const solicitarReagendaPaciente = async (req, res) => {
     }
 
     const cambiosReagenda = {
-      // La fecha y la hora NO cambian.
+      // La fecha y la hora actuales NO cambian todavía.
       estado:
         'reagenda_solicitada',
 
       motivoReagenda,
+
+      fechaSolicitadaPaciente,
+      horaSolicitadaPaciente,
 
       solicitadoPorPaciente:
         uid,
@@ -941,6 +1129,39 @@ const solicitarReagendaPaciente = async (req, res) => {
     await citaRef.update(
       cambiosReagenda
     )
+
+    await crearNotificacionProfesional({
+      profesionalUid:
+        citaActual.especialistaUid,
+
+      pacienteUid:
+        uid,
+
+      citaId:
+        citaRef.id,
+
+      tipo:
+        'reagenda_solicitada',
+
+      titulo:
+        'Solicitud de reagenda',
+
+      mensaje:
+        `${citaActual.nombrePaciente || 'El paciente'} solicitó reagendar su cita.`,
+
+      detalle:
+        [
+          `Motivo: ${motivoReagenda}`,
+          fechaSolicitadaPaciente
+            ? `Fecha sugerida: ${fechaSolicitadaPaciente}`
+            : '',
+          horaSolicitadaPaciente
+            ? `Hora sugerida: ${horaSolicitadaPaciente}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+    })
 
     const actualizada =
       await citaRef.get()

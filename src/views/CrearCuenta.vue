@@ -1,4 +1,5 @@
 <script setup>
+import { verificarCedulaProfesional } from '../services/doctoresService'
 // ==========================================================
 // CREAR CUENTA - VIBRA LA VIDA
 // Registro para paciente y profesional de la salud en una sola pantalla.
@@ -404,23 +405,12 @@ const verificarCedula = async () => {
   estadoCedula.value = 'verificando'
 
   try {
-    const respuesta = await fetch(
-      'http://localhost:3001/api/doctores/verificar-cedula',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          cedula,
-          nombreCompleto,
-        }),
-      }
-    )
+    const datos = await verificarCedulaProfesional({
+      cedula,
+      nombreCompleto,
+    })
 
-    const datos = await respuesta.json()
-
-    if (!respuesta.ok || !datos.valida) {
+    if (!datos.valida) {
       estadoCedula.value = 'no-encontrada'
       mensajeCedula.value =
         datos.mensaje ||
@@ -456,28 +446,17 @@ const verificarCedula = async () => {
 // Al usuario nunca se le informa si el motivo real es
 // una cédula ya utilizada.
 const revalidarProfesionalAntesDeCrear = async () => {
-  const respuesta = await fetch(
-    'http://localhost:3001/api/doctores/verificar-cedula',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        cedula:
-          formulario.value.cedulaProfesional.trim(),
+  const datos = await verificarCedulaProfesional({
+    cedula:
+      formulario.value.cedulaProfesional.trim(),
 
-        nombreCompleto:
-          limpiarNombreFinal(
-            formulario.value.nombreCompleto
-          ),
-      }),
-    }
-  )
+    nombreCompleto:
+      limpiarNombreFinal(
+        formulario.value.nombreCompleto
+      ),
+  })
 
-  const datos = await respuesta.json()
-
-  if (!respuesta.ok || !datos.valida) {
+  if (!datos.valida) {
     throw new Error(
       'REGISTRO_PROFESIONAL_NO_VALIDO'
     )

@@ -1,29 +1,49 @@
-const express =
-  require('express')
+const express = require('express')
 
 const {
-  calcularIMC,
-  calcularCalorias,
-} = require(
-  '../controllers/calculadoras.controller'
-)
+  obtenerMisCitas,
+  crearCita,
+  actualizarCita,
+  confirmarCitaPaciente,
+  solicitarReagendaPaciente,
+  cancelarCitaPaciente,
+  reagendarCitaProfesional,
+  eliminarCita,
+} = require('../controllers/citas.controller')
 
-const router =
-  express.Router()
+const {
+  verifyFirebaseToken,
+} = require('../middlewares/auth.middleware')
 
+const router = express.Router()
 
-// Calcular IMC
+router.use(verifyFirebaseToken)
+
+router.get('/', obtenerMisCitas)
+router.post('/', crearCita)
+
 router.post(
-  '/imc',
-  calcularIMC
+  '/:id/confirmar',
+  confirmarCitaPaciente
 )
 
-
-// Calcular calorías
 router.post(
-  '/calorias',
-  calcularCalorias
+  '/:id/cancelar',
+  cancelarCitaPaciente
 )
 
+router.post(
+  '/:id/solicitar-reagenda',
+  solicitarReagendaPaciente
+)
+
+router.put('/:id', actualizarCita)
+
+router.post(
+  '/:id/reagendar-profesional',
+  reagendarCitaProfesional
+)
+
+router.delete('/:id', eliminarCita)
 
 module.exports = router

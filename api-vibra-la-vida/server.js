@@ -5,12 +5,23 @@ require("dotenv").config();
 const app = require("./src/app");
 
 // Definimos el puerto.
-// Si no existe PORT en .env, usará 3001.
+// Render asignará PORT automáticamente.
+// Si no existe, usará 3001 en local.
 const PORT = process.env.PORT || 3001;
 
 /**
  * Iniciamos el servidor.
+ *
+ * 0.0.0.0 permite que Render y otros dispositivos
+ * puedan conectarse correctamente al servidor.
  */
-app.listen(PORT, () => {
-  console.log(`API de Vibra la vida corriendo en http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+
+  console.log(
+    `API de Vibra la vida corriendo en el puerto ${PORT}`
+  );
+
+  console.log(
+    `Servidor iniciado correctamente`
+  );
 });

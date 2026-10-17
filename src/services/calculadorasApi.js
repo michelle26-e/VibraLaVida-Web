@@ -2,13 +2,11 @@
 // SERVICIO DE CALCULADORAS - VIBRA LA VIDA
 // ==========================================================
 
-const API_URL =
-  import.meta.env.VITE_API_URL ||
-  'http://localhost:3001'
+import { API_BASE_URL } from './apiConfig'
 
 const realizarPeticion = async (ruta, datos) => {
   const respuesta = await fetch(
-    `${API_URL}${ruta}`,
+    `${API_BASE_URL}${ruta}`,
     {
       method: 'POST',
       headers: {
@@ -29,6 +27,7 @@ const realizarPeticion = async (ruta, datos) => {
   if (!respuesta.ok) {
     const error = new Error(
       contenido?.mensaje ||
+      contenido?.message ||
       'No se pudo completar la operación.'
     )
 

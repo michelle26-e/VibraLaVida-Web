@@ -3,7 +3,7 @@
 import TarjetaAccion from '../components/TarjetaAccion.vue'
 
 // Importamos lo que necesitamos de Vue
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 
 // Importamos el router para cambiar de página
 import { useRouter } from 'vue-router'
@@ -72,6 +72,125 @@ const datosUsuario = ref(null)
 // Guardamos cuál sección del menú está activa
 const seccionActiva = ref('inicio')
 
+// Referencia a la barra lateral.
+// La usamos para mantener visible la opción activa mientras
+// el usuario baja o sube por la página.
+const barraLateralRef = ref(null)
+
+// Evita ejecutar demasiados cálculos durante el scroll.
+let scrollPendiente = false
+
+
+// ==========================================================
+// RECORDAR POSICIÓN DEL HOME AL ABRIR UNA HERRAMIENTA
+// ==========================================================
+//
+// Cuando el usuario entra a una calculadora o encuesta,
+// guardamos dónde estaba en el Home.
+//
+// Así, cuando la herramienta regresa a "/", el Home vuelve
+// exactamente a esa zona en lugar de comenzar desde arriba.
+// ==========================================================
+
+const CLAVE_SCROLL_HOME =
+  'vibra-home-scroll-y'
+
+const CLAVE_SECCION_HOME =
+  'vibra-home-seccion'
+
+
+const guardarPosicionHome = () => {
+  sessionStorage.setItem(
+    CLAVE_SCROLL_HOME,
+    String(window.scrollY)
+  )
+
+  sessionStorage.setItem(
+    CLAVE_SECCION_HOME,
+    seccionActiva.value
+  )
+}
+
+
+const restaurarPosicionHome = () => {
+  const scrollGuardado =
+    sessionStorage.getItem(
+      CLAVE_SCROLL_HOME
+    )
+
+  const seccionGuardada =
+    sessionStorage.getItem(
+      CLAVE_SECCION_HOME
+    )
+
+  if (seccionGuardada) {
+    seccionActiva.value =
+      seccionGuardada
+  }
+
+  if (scrollGuardado !== null) {
+    const posicion =
+      Number(scrollGuardado)
+
+    if (
+      Number.isFinite(posicion)
+    ) {
+      // IMPORTANTE:
+      // Desactivamos temporalmente cualquier scroll suave
+      // global para que el Home NO recorra visualmente todas
+      // las secciones desde arriba.
+      //
+      // El regreso será instantáneo al punto guardado.
+      const html =
+        document.documentElement
+
+      const body =
+        document.body
+
+      const scrollHtmlAnterior =
+        html.style.scrollBehavior
+
+      const scrollBodyAnterior =
+        body.style.scrollBehavior
+
+      html.style.scrollBehavior =
+        'auto'
+
+      body.style.scrollBehavior =
+        'auto'
+
+      requestAnimationFrame(() => {
+        window.scrollTo(
+          0,
+          posicion
+        )
+
+        actualizarSeccionActivaPorScroll()
+
+        // Restauramos el comportamiento original después
+        // de colocar la página en la posición correcta.
+        requestAnimationFrame(() => {
+          html.style.scrollBehavior =
+            scrollHtmlAnterior
+
+          body.style.scrollBehavior =
+            scrollBodyAnterior
+        })
+      })
+    }
+  }
+
+  // Se utiliza una sola vez. Cuando el usuario vuelva a
+  // abrir otra herramienta se guardará una posición nueva.
+  sessionStorage.removeItem(
+    CLAVE_SCROLL_HOME
+  )
+
+  sessionStorage.removeItem(
+    CLAVE_SECCION_HOME
+  )
+}
+
 // Guarda la imagen activa de cada carrusel.
 // Cada sección mantiene su propio índice.
 const indiceCarrusel = ref({})
@@ -79,8 +198,9 @@ const indiceCarrusel = ref({})
 // Intervalo para cambio automático de imágenes
 let intervaloCarrusel = null
 
-// Solo mostramos "Mi equipo de salud" cuando el paciente
-// tiene por lo menos un seguimiento activo en Firestore.
+// Mostramos "Mi equipo de salud" cuando el paciente
+// tiene al menos un seguimiento activo O una solicitud pendiente.
+// Esto permite que pueda entrar a revisar una solicitud nueva.
 const tieneEquipoSalud = ref(false)
 
 // Variable para detener el observador de Firebase cuando se cierre la vista
@@ -175,8 +295,14 @@ const irAMiCuenta = () => {
   router.push('/mi-cuenta')
 }
 
-// Comprueba si el paciente tiene al menos un profesional
-// vinculado en la colección seguimiento_profesional.
+// Comprueba si el paciente tiene al menos:
+// 1. un seguimiento activo, o
+// 2. una solicitud de seguimiento pendiente.
+//
+// Tener una solicitud pendiente NO significa que el profesional
+// ya tenga acceso a los datos del paciente. Solo permite mostrar
+// el acceso a "Mi equipo de salud" para que el paciente pueda
+// revisar la solicitud.
 const comprobarEquipoSalud = async (uidPaciente) => {
   try {
     const consulta = query(
@@ -196,8 +322,15 @@ const comprobarEquipoSalud = async (uidPaciente) => {
 
     tieneEquipoSalud.value =
       respuesta.docs.some(
-        (documento) =>
-          documento.data().estado === 'activo'
+        (documento) => {
+          const estado =
+            documento.data().estado
+
+          return (
+            estado === 'activo' ||
+            estado === 'pendiente'
+          )
+        }
       )
   } catch (error) {
     console.error(
@@ -216,6 +349,39 @@ const comprobarEquipoSalud = async (uidPaciente) => {
 onMounted(() => {
   // Inicia el cambio automático de imágenes del carrusel
   iniciarCarruselAutomatico()
+
+  // Sincroniza el tema visible con la opción activa del menú.
+  window.addEventListener(
+    'scroll',
+    manejarScrollPagina,
+    {
+      passive: true,
+    }
+  )
+
+  // Si cambia el tamaño de la ventana volvemos a calcular
+  // qué tema se encuentra en la zona de lectura.
+  window.addEventListener(
+    'resize',
+    manejarScrollPagina
+  )
+
+  // Si venimos de una calculadora o encuesta,
+  // regresamos a la posición que tenía el usuario.
+  //
+  // Si entramos al Home normalmente, simplemente calculamos
+  // qué sección está visible.
+  if (
+    sessionStorage.getItem(
+      CLAVE_SCROLL_HOME
+    ) !== null
+  ) {
+    restaurarPosicionHome()
+  } else {
+    requestAnimationFrame(() => {
+      actualizarSeccionActivaPorScroll()
+    })
+  }
 
   detenerObservador = onAuthStateChanged(auth, async (usuario) => {
     usuarioActual.value = usuario
@@ -247,6 +413,16 @@ onMounted(() => {
 // Se ejecuta cuando se abandona la página para detener la verificación del usuario
 onUnmounted(() => {
   detenerCarruselAutomatico()
+
+  window.removeEventListener(
+    'scroll',
+    manejarScrollPagina
+  )
+
+  window.removeEventListener(
+    'resize',
+    manejarScrollPagina
+  )
 
   if (detenerObservador) {
     detenerObservador()
@@ -314,7 +490,7 @@ const elementosMenu = [
 ]
 
 // El acceso a "Mi equipo de salud" se agrega de manera
-// dinámica únicamente cuando existe un vínculo activo.
+// dinámica cuando existe un vínculo activo o una solicitud pendiente.
 const elementosMenuVisibles = computed(() => {
   const menu = [...elementosMenu]
 
@@ -349,6 +525,167 @@ const elementosMenuVisibles = computed(() => {
 
   return menu
 })
+
+// ==========================================================
+// SINCRONIZAR SCROLL CON EL MENÚ LATERAL
+// ==========================================================
+//
+// La opción activa ya no cambia solamente cuando hacemos clic.
+//
+// Ahora también detectamos qué sección está leyendo el usuario
+// mientras baja o sube manualmente por la página.
+//
+// El punto de lectura se coloca aproximadamente al 30 % de la
+// pantalla. La última sección cuyo inicio haya cruzado ese punto
+// se considera la sección activa.
+// ==========================================================
+
+// Mantiene visible dentro de la barra lateral el botón activo.
+// Esto es útil porque el menú también tiene su propio scroll.
+const mantenerOpcionActivaVisible = async (
+  idSeccion
+) => {
+  await nextTick()
+
+  const barra =
+    barraLateralRef.value
+
+  if (!barra) {
+    return
+  }
+
+  const boton =
+    barra.querySelector(
+      `[data-seccion="${idSeccion}"]`
+    )
+
+  if (!boton) {
+    return
+  }
+
+  const margen = 28
+
+  const arribaBoton =
+    boton.offsetTop
+
+  const abajoBoton =
+    arribaBoton +
+    boton.offsetHeight
+
+  const arribaVisible =
+    barra.scrollTop
+
+  const abajoVisible =
+    arribaVisible +
+    barra.clientHeight
+
+  if (
+    arribaBoton <
+    arribaVisible + margen
+  ) {
+    barra.scrollTo({
+      top:
+        Math.max(
+          0,
+          arribaBoton - margen
+        ),
+      behavior: 'smooth',
+    })
+
+    return
+  }
+
+  if (
+    abajoBoton >
+    abajoVisible - margen
+  ) {
+    barra.scrollTo({
+      top:
+        abajoBoton -
+        barra.clientHeight +
+        margen,
+      behavior: 'smooth',
+    })
+  }
+}
+
+
+// Calcula qué tema corresponde a la posición actual del scroll.
+const actualizarSeccionActivaPorScroll = () => {
+  const puntoLectura =
+    window.scrollY +
+    window.innerHeight * 0.30
+
+  const idsSecciones =
+    elementosMenu
+      .filter(
+        (elemento) =>
+          elemento.idSeccion
+      )
+      .map(
+        (elemento) =>
+          elemento.idSeccion
+      )
+
+  let nuevaSeccion =
+    'inicio'
+
+  idsSecciones.forEach(
+    (idSeccion) => {
+      const elemento =
+        document.getElementById(
+          idSeccion
+        )
+
+      if (!elemento) {
+        return
+      }
+
+      const posicionSuperior =
+        elemento.getBoundingClientRect().top +
+        window.scrollY
+
+      if (
+        posicionSuperior <=
+        puntoLectura
+      ) {
+        nuevaSeccion =
+          idSeccion
+      }
+    }
+  )
+
+  // Solo actualizamos Vue cuando realmente cambió el tema.
+  if (
+    nuevaSeccion !==
+    seccionActiva.value
+  ) {
+    seccionActiva.value =
+      nuevaSeccion
+
+    mantenerOpcionActivaVisible(
+      nuevaSeccion
+    )
+  }
+}
+
+
+// Limitamos la actualización a una vez por frame para
+// mantener el desplazamiento suave.
+const manejarScrollPagina = () => {
+  if (scrollPendiente) {
+    return
+  }
+
+  scrollPendiente = true
+
+  requestAnimationFrame(() => {
+    actualizarSeccionActivaPorScroll()
+
+    scrollPendiente = false
+  })
+}
+
 
 // Secciones informativas del temario
 const seccionesTemario = [
@@ -526,6 +863,10 @@ const irAlTemario = () => {
 const irASeccion = (idSeccion) => {
   seccionActiva.value = idSeccion
 
+  mantenerOpcionActivaVisible(
+    idSeccion
+  )
+
   const seccion =
     document.getElementById(
       idSeccion
@@ -656,7 +997,12 @@ const seleccionarElementoMenu = (
   elemento
 ) => {
   if (elemento.ruta) {
-    router.push(elemento.ruta)
+    guardarPosicionHome()
+
+    router.push(
+      elemento.ruta
+    )
+
     return
   }
 
@@ -668,7 +1014,11 @@ const seleccionarElementoMenu = (
 // Función para abrir una tarjeta del temario
 const abrirTarjeta = (tarjeta) => {
   if (tarjeta.ruta) {
-    router.push(tarjeta.ruta)
+    guardarPosicionHome()
+
+    router.push(
+      tarjeta.ruta
+    )
   }
 }
 
@@ -676,7 +1026,7 @@ const abrirTarjeta = (tarjeta) => {
 
 <template>
   <div class="pagina-inicio">
-    <aside class="barra-lateral">
+    <aside ref="barraLateralRef" class="barra-lateral">
       <div class="contenedor-logo">
         <img :src="logoVibra" alt="Logo Vibra la Vida" />
       </div>
@@ -715,6 +1065,7 @@ const abrirTarjeta = (tarjeta) => {
           :key="elemento.titulo"
           type="button"
           class="enlace-menu"
+          :data-seccion="elemento.idSeccion || ''"
           :class="{
             activo:
               !elemento.ruta &&
@@ -752,7 +1103,8 @@ const abrirTarjeta = (tarjeta) => {
       </div>
     </aside>
 
-    <main id="inicio" class="contenido-principal">
+    <main class="contenido-principal">
+      <div id="inicio" class="bloque-inicio-scroll">
       <section class="tarjeta-aviso">
         <div class="icono-aviso">!</div>
 
@@ -796,6 +1148,8 @@ const abrirTarjeta = (tarjeta) => {
           <img :src="logoPrincipal" alt="Imagen principal Vibra la Vida" />
         </div>
       </section>
+
+      </div>
 
       <section id="temario" class="contenedor-temario">
         <article

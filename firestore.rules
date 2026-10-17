@@ -3,146 +3,326 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ==========================================
+    // ======================================================
+    // FUNCIONES AUXILIARES
+    // ======================================================
+
+    function estaAutenticado() {
+      return request.auth != null;
+    }
+
+    function esPropietario(uid) {
+      return estaAutenticado()
+             && request.auth.uid == uid;
+    }
+
+    function obtenerUsuarioActual() {
+      return get(
+        /databases/$(database)/documents/usuarios/$(request.auth.uid)
+      );
+    }
+
+    function esProfesional() {
+      return estaAutenticado()
+             && obtenerUsuarioActual().data.rol in [
+               'profesional_salud',
+               'doctor'
+             ];
+    }
+
+
+    // ======================================================
     // USUARIOS
-    // ==========================================
-    // Cada usuario solamente puede consultar,
-    // crear, editar o eliminar su propio perfil.
+    // ======================================================
+    // Cada usuario administra únicamente su propio documento.
+    // Los profesionales NO leen directamente los documentos
+    // privados de otros usuarios desde el frontend.
+    // ======================================================
+
     match /usuarios/{userId} {
 
-      allow create: if request.auth != null
-                    && request.auth.uid == userId;
+      allow create: if esPropietario(userId);
 
-      allow read: if request.auth != null
-                  && request.auth.uid == userId;
+      allow read: if esPropietario(userId);
 
-      allow update: if request.auth != null
-                    && request.auth.uid == userId;
+      allow update: if esPropietario(userId);
 
-      allow delete: if request.auth != null
-                    && request.auth.uid == userId;
+      allow delete: if esPropietario(userId);
     }
 
 
-    // ==========================================
+    // ======================================================
+    // DIRECTORIO DE PACIENTES
+    // ======================================================
+    // Contiene únicamente información mínima para búsqueda:
+    // - uid
+    // - nombreCompleto
+    // - nombreBusqueda
+    // - fechaRegistro (opcional)
+    //
+    // Los profesionales pueden leerlo para encontrar pacientes.
+    // El paciente solamente puede crear/editar su propia entrada.
+    // ======================================================
+
+    match /directorio_pacientes/{pacienteUid} {
+
+      allow read: if estaAutenticado()
+                  && (
+                    request.auth.uid == pacienteUid
+                    || esProfesional()
+                  );
+
+      allow create: if esPropietario(pacienteUid)
+                    && request.resource.data.uid == pacienteUid
+                    && request.resource.data.keys().hasOnly([
+                      'uid',
+                      'nombreCompleto',
+                      'nombreBusqueda',
+                      'fechaRegistro'
+                    ]);
+
+      allow update: if esPropietario(pacienteUid)
+                    && request.resource.data.uid == pacienteUid
+                    && request.resource.data.keys().hasOnly([
+                      'uid',
+                      'nombreCompleto',
+                      'nombreBusqueda',
+                      'fechaRegistro'
+                    ]);
+
+      allow delete: if esPropietario(pacienteUid);
+    }
+
+
+    // ======================================================
+    // PERFILES PROFESIONALES
+    // ======================================================
+    // Información profesional visible para usuarios autenticados.
+    // Solo el propio profesional puede crear, editar o eliminar
+    // su perfil público/profesional.
+    // ======================================================
+
+    match /perfiles_profesionales/{profesionalId} {
+
+      allow read: if estaAutenticado();
+
+      allow create: if esPropietario(profesionalId);
+
+      allow update: if esPropietario(profesionalId);
+
+      allow delete: if esPropietario(profesionalId);
+    }
+
+
+    // ======================================================
+    // SEGUIMIENTO PROFESIONAL
+    // ======================================================
+    // Relación entre profesional y paciente.
+    //
+    // Pueden leerla:
+    // - el paciente relacionado
+    // - el profesional relacionado
+    //
+    // Solo un profesional puede crear/modificar/eliminar
+    // vínculos en esta etapa del proyecto.
+    // ======================================================
+
+    match /seguimiento_profesional/{seguimientoId} {
+
+      allow read: if estaAutenticado()
+                  && (
+                    resource.data.pacienteUid == request.auth.uid
+                    ||
+                    resource.data.profesionalUid == request.auth.uid
+                  );
+
+      allow create: if esProfesional()
+                    && request.resource.data.profesionalUid
+                       == request.auth.uid
+                    && request.resource.data.pacienteUid is string
+                    && request.resource.data.estado == 'activo'
+                    && exists(
+                      /databases/$(database)/documents/directorio_pacientes/$(request.resource.data.pacienteUid)
+                    );
+
+      allow update: if esProfesional()
+                    && resource.data.profesionalUid
+                       == request.auth.uid
+                    && request.resource.data.profesionalUid
+                       == resource.data.profesionalUid
+                    && request.resource.data.pacienteUid
+                       == resource.data.pacienteUid;
+
+      allow delete: if esProfesional()
+                    && resource.data.profesionalUid
+                       == request.auth.uid;
+    }
+
+
+    // ======================================================
     // RESULTADOS ANTIGUOS
-    // ==========================================
-    // La dejamos temporalmente porque actualmente
-    // todavía tienes resultados_bienestar.
+    // ======================================================
+
     match /resultados_bienestar/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
 
 
-    // ==========================================
+    // ======================================================
     // IMC
-    // ==========================================
+    // ======================================================
+
     match /resultados_imc/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
 
 
-    // ==========================================
+    // ======================================================
     // CALORÍAS
-    // ==========================================
+    // ======================================================
+
     match /resultados_calorias/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
 
 
-    // ==========================================
+    // ======================================================
     // DASS-21
-    // ==========================================
+    // ======================================================
+
     match /resultados_dass21/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
 
 
-    // ==========================================
+    // ======================================================
     // INSOMNIO DE ATENAS
-    // ==========================================
+    // ======================================================
+
     match /resultados_ais/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
 
 
-    // ==========================================
+    // ======================================================
     // RIESGO CARDIOVASCULAR / CARDIOMETABÓLICO
-    // ==========================================
+    // ======================================================
+
     match /resultados_riesgo_cardiovascular/{resultadoId} {
 
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
+      allow create: if estaAutenticado()
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow read: if request.auth != null
-                  && resource.data.uid == request.auth.uid;
+      allow read: if estaAutenticado()
+                  && resource.data.uid
+                     == request.auth.uid;
 
-      allow update: if request.auth != null
-                    && resource.data.uid == request.auth.uid
-                    && request.resource.data.uid == request.auth.uid;
+      allow update: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid
+                    && request.resource.data.uid
+                       == request.auth.uid;
 
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow delete: if estaAutenticado()
+                    && resource.data.uid
+                       == request.auth.uid;
     }
+
+
+    // ======================================================
+    // CITAS
+    // ======================================================
+    // No se abren reglas directas desde el frontend.
+    //
+    // Las citas se consultan y modifican por la API Express
+    // usando Firebase Admin SDK, que no depende de estas reglas.
+    // ======================================================
+
   }
 }

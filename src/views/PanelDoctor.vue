@@ -1,4 +1,5 @@
 <script setup>
+import { verificarCedulaProfesional } from '../services/doctoresService'
 // ==========================================================
 // PANEL PROFESIONAL - VIBRA LA VIDA
 // ==========================================================
@@ -11,11 +12,45 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import {
+  Activity,
+  CalendarDays,
+  FileText,
+  House,
+  LogOut,
+  UserRound,
+  Users,
+} from 'lucide-vue-next'
+
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  setDoc,
+  where,
+} from 'firebase/firestore'
 
 import { auth, db } from '../firebase/firebaseConfig'
 import { cerrarSesionUsuario } from '../services/authService'
+import {
+  actualizarCita,
+  crearCita,
+  eliminarCita,
+  obtenerCitas,
+} from '../services/citasService'
+import {
+  buscarPacientesPorNombre,
+  eliminarPacienteVinculado,
+  obtenerPacientesVinculados,
+  obtenerSolicitudesPendientes,
+  vincularPaciente,
+} from '../services/seguimientoProfesionalService'
+import {
+  obtenerUltimoHealthPaciente,
+} from '../services/healthConnectService'
 
 import logoVibra from '../assets/logo-vibra.png'
 
@@ -110,16 +145,1230 @@ const tiposFormacion = [
 // correspondiente entre paciente y doctor.
 
 const pacientes = ref([])
+const solicitudesPendientes = ref([])
+const cargandoPacientes = ref(false)
+const mensajeErrorPacientes = ref('')
+
+// Búsqueda visual dentro de la lista de pacientes vinculados.
+const textoFiltroPacientes = ref('')
+
+const pacientesFiltrados = computed(() => {
+  const texto =
+    textoFiltroPacientes.value
+      .trim()
+      .toLowerCase()
+
+  if (!texto) {
+    return pacientes.value
+  }
+
+  return pacientes.value.filter(
+    (paciente) => {
+
+      const nombre =
+        String(
+          paciente.nombreCompleto || ''
+        ).toLowerCase()
+
+      const correo =
+        String(
+          paciente.correo || ''
+        ).toLowerCase()
+
+      return (
+        nombre.includes(texto) ||
+        correo.includes(texto)
+      )
+    }
+  )
+})
+
+// ----------------------------------------------------------
+// DETALLE DEL PACIENTE + HEALTH CONNECT
+// ----------------------------------------------------------
+//
+// Esta vista se abre dentro del panel como una pantalla
+// independiente. NO se muestra en un panel lateral.
+//
+// Los datos de Health Connect se consultan mediante la API,
+// no directamente desde Firestore.
+// ----------------------------------------------------------
+
+const pacienteDetalle = ref(null)
+const healthPaciente = ref(null)
+const cargandoHealthPaciente = ref(false)
+const mensajeErrorHealthPaciente = ref('')
+
+// Modal para buscar pacientes y solicitar seguimiento
+const mostrarModalPaciente = ref(false)
+const textoBusquedaPaciente = ref('')
+const resultadosBusquedaPaciente = ref([])
+const buscandoPaciente = ref(false)
+const agregandoPacienteUid = ref('')
+const mensajeBusquedaPaciente = ref('')
+const tipoMensajeBusquedaPaciente = ref('')
+
+// Paciente seleccionado visualmente antes de enviar la solicitud.
+// La lógica real de seguimiento NO cambia.
+const pacienteSeleccionadoSolicitud = ref(null)
+
+let temporizadorBusquedaPaciente = null
+
+// ----------------------------------------------------------
+// CARGAR PACIENTES VINCULADOS
+// ----------------------------------------------------------
+// Usa la misma colección que "Mi equipo de salud":
+// seguimiento_profesional.
+//
+// Solo mostramos vínculos activos del profesional actual.
+// ----------------------------------------------------------
+
+const cargarPacientesVinculados = async (profesionalUid) => {
+  cargandoPacientes.value = true
+  mensajeErrorPacientes.value = ''
+
+  try {
+    const vinculados =
+      await obtenerPacientesVinculados(
+        profesionalUid
+      )
+
+    const pacientesCompletos =
+      await Promise.all(
+        vinculados.map(
+          async (paciente) => {
+
+            try {
+
+              const respuesta =
+                await obtenerUltimoHealthPaciente(
+                  paciente.uid
+                )
+
+              return {
+                ...paciente,
+                ...(respuesta?.paciente || {}),
+              }
+
+            } catch (error) {
+
+              console.warn(
+                'No fue posible completar el perfil del paciente:',
+                paciente.uid,
+                error
+              )
+
+              return paciente
+            }
+          }
+        )
+      )
+
+    pacientes.value =
+      pacientesCompletos
+
+  } catch (error) {
+    console.error(
+      'Error al cargar pacientes vinculados:',
+      error
+    )
+
+    pacientes.value = []
+
+    mensajeErrorPacientes.value =
+      'No fue posible cargar los pacientes vinculados.'
+  } finally {
+    cargandoPacientes.value = false
+  }
+}
+
+// ----------------------------------------------------------
+// CARGAR SOLICITUDES PENDIENTES
+// ----------------------------------------------------------
+// Estas solicitudes todavía NO convierten a la persona
+// en paciente activo del profesional.
+// ----------------------------------------------------------
+
+const cargarSolicitudesPendientes = async (profesionalUid) => {
+  if (!profesionalUid) {
+    solicitudesPendientes.value = []
+    return
+  }
+
+  try {
+    solicitudesPendientes.value =
+      await obtenerSolicitudesPendientes(
+        profesionalUid
+      )
+  } catch (error) {
+    console.error(
+      'Error al cargar solicitudes pendientes:',
+      error
+    )
+
+    solicitudesPendientes.value = []
+  }
+}
+
+// ----------------------------------------------------------
+// BUSCAR PACIENTES Y SOLICITAR SEGUIMIENTO
+// ----------------------------------------------------------
+
+const abrirModalPaciente = async () => {
+  textoBusquedaPaciente.value = ''
+  resultadosBusquedaPaciente.value = []
+  pacienteSeleccionadoSolicitud.value = null
+  mensajeBusquedaPaciente.value = ''
+  tipoMensajeBusquedaPaciente.value = ''
+  mostrarModalPaciente.value = true
+
+  const profesionalUid =
+    auth.currentUser?.uid
+
+  if (profesionalUid) {
+    await cargarSolicitudesPendientes(
+      profesionalUid
+    )
+  }
+}
+
+const cerrarModalPaciente = () => {
+  mostrarModalPaciente.value = false
+  textoBusquedaPaciente.value = ''
+  resultadosBusquedaPaciente.value = []
+  pacienteSeleccionadoSolicitud.value = null
+  mensajeBusquedaPaciente.value = ''
+  tipoMensajeBusquedaPaciente.value = ''
+  agregandoPacienteUid.value = ''
+
+  if (temporizadorBusquedaPaciente) {
+    clearTimeout(temporizadorBusquedaPaciente)
+    temporizadorBusquedaPaciente = null
+  }
+}
+
+const pacienteYaVinculado = (pacienteUid) => {
+  return pacientes.value.some(
+    (paciente) =>
+      paciente.uid === pacienteUid
+  )
+}
+
+// Comprueba si al paciente ya se le envió una solicitud
+// que todavía espera autorización.
+const pacienteConSolicitudPendiente = (pacienteUid) => {
+  return solicitudesPendientes.value.some(
+    (solicitud) =>
+      solicitud.pacienteUid === pacienteUid
+  )
+}
+
+const ejecutarBusquedaPaciente = async () => {
+  const texto =
+    textoBusquedaPaciente.value.trim()
+
+  mensajeBusquedaPaciente.value = ''
+  tipoMensajeBusquedaPaciente.value = ''
+
+  if (texto.length < 2) {
+    resultadosBusquedaPaciente.value = []
+    return
+  }
+
+  buscandoPaciente.value = true
+
+  try {
+    resultadosBusquedaPaciente.value =
+      await buscarPacientesPorNombre(texto)
+
+    if (
+      resultadosBusquedaPaciente.value.length === 0
+    ) {
+      mensajeBusquedaPaciente.value =
+        'No encontramos pacientes con ese nombre.'
+
+      tipoMensajeBusquedaPaciente.value =
+        'informacion'
+    }
+  } catch (error) {
+    console.error(
+      'Error al buscar pacientes:',
+      error
+    )
+
+    resultadosBusquedaPaciente.value = []
+
+    mensajeBusquedaPaciente.value =
+      'No fue posible realizar la búsqueda.'
+
+    tipoMensajeBusquedaPaciente.value =
+      'error'
+  } finally {
+    buscandoPaciente.value = false
+  }
+}
+
+// Busca automáticamente mientras el profesional escribe.
+const alEscribirBusquedaPaciente = () => {
+  if (temporizadorBusquedaPaciente) {
+    clearTimeout(temporizadorBusquedaPaciente)
+  }
+
+  temporizadorBusquedaPaciente = setTimeout(
+    () => {
+      ejecutarBusquedaPaciente()
+    },
+    350
+  )
+}
+
+const agregarPaciente = async (paciente) => {
+  const profesionalUid =
+    auth.currentUser?.uid
+
+  if (!profesionalUid) {
+    mensajeBusquedaPaciente.value =
+      'Tu sesión terminó. Inicia sesión nuevamente.'
+
+    tipoMensajeBusquedaPaciente.value =
+      'error'
+
+    return
+  }
+
+  if (
+    pacienteYaVinculado(paciente.uid) ||
+    pacienteConSolicitudPendiente(paciente.uid)
+  ) {
+    return
+  }
+
+  agregandoPacienteUid.value = paciente.uid
+  mensajeBusquedaPaciente.value = ''
+  tipoMensajeBusquedaPaciente.value = ''
+
+  try {
+    await vincularPaciente({
+      profesionalUid,
+      pacienteUid: paciente.uid,
+    })
+
+    await Promise.all([
+      cargarPacientesVinculados(
+        profesionalUid
+      ),
+      cargarSolicitudesPendientes(
+        profesionalUid
+      ),
+    ])
+
+    mensajeBusquedaPaciente.value =
+      `Solicitud de seguimiento enviada a ${paciente.nombreCompleto}.`
+
+    tipoMensajeBusquedaPaciente.value =
+      'correcto'
+  } catch (error) {
+    console.error(
+      'Error al enviar solicitud de seguimiento:',
+      error
+    )
+
+    mensajeBusquedaPaciente.value =
+      'No fue posible enviar la solicitud de seguimiento.'
+
+    tipoMensajeBusquedaPaciente.value =
+      'error'
+  } finally {
+    agregandoPacienteUid.value = ''
+  }
+}
+
+// ----------------------------------------------------------
+// QUITAR PACIENTE DEL SEGUIMIENTO
+// ----------------------------------------------------------
+// Importante:
+// esto NO elimina la cuenta del paciente.
+// Solo elimina la relación con este profesional.
+
+const quitarPaciente = async (paciente) => {
+  const profesionalUid =
+    auth.currentUser?.uid
+
+  if (!profesionalUid) {
+    mensajeErrorPacientes.value =
+      'Tu sesión terminó. Inicia sesión nuevamente.'
+    return
+  }
+
+  const confirmar = window.confirm(
+    `¿Deseas quitar a ${paciente.nombreCompleto} de tu seguimiento?`
+  )
+
+  if (!confirmar) {
+    return
+  }
+
+  mensajeErrorPacientes.value = ''
+
+  try {
+
+    // El servicio busca el vínculo real en Firestore.
+    // Esto funciona tanto para:
+    //
+    // 1. vínculos nuevos:
+    //    profesionalUid_pacienteUid
+    //
+    // 2. vínculos antiguos con ID aleatorio.
+    //
+    // También elimina posibles duplicados del mismo vínculo.
+    await eliminarPacienteVinculado({
+      profesionalUid,
+      pacienteUid: paciente.uid,
+    })
+
+    await cargarPacientesVinculados(
+      profesionalUid
+    )
+
+  } catch (error) {
+
+    console.error(
+      'Error al quitar paciente:',
+      error
+    )
+
+    mensajeErrorPacientes.value =
+      error.message ||
+      'No fue posible quitar al paciente.'
+  }
+}
+
+// ----------------------------------------------------------
+// ABRIR DETALLE DEL PACIENTE
+// ----------------------------------------------------------
+
+const abrirDetallePaciente = async (paciente) => {
+  pacienteDetalle.value = paciente
+  healthPaciente.value = null
+  mensajeErrorHealthPaciente.value = ''
+
+  opcionActiva.value = 'detalle-paciente'
+
+  await cargarHealthPaciente(
+    paciente.uid
+  )
+}
+
+// ----------------------------------------------------------
+// VOLVER A LA LISTA DE PACIENTES
+// ----------------------------------------------------------
+
+const volverAPacientes = () => {
+  pacienteDetalle.value = null
+  healthPaciente.value = null
+  mensajeErrorHealthPaciente.value = ''
+
+  seleccionarOpcion('pacientes')
+}
+
+// ----------------------------------------------------------
+// CARGAR ÚLTIMO HEALTH CONNECT DEL PACIENTE
+// ----------------------------------------------------------
+
+const cargarHealthPaciente = async (
+  pacienteUid
+) => {
+  cargandoHealthPaciente.value = true
+  mensajeErrorHealthPaciente.value = ''
+
+  try {
+
+    // La API ahora devuelve dos cosas:
+    // 1. paciente = información general guardada en usuarios/{uid}
+    // 2. data = último registro de Health Connect
+    const respuesta =
+      await obtenerUltimoHealthPaciente(
+        pacienteUid
+      )
+
+    // ------------------------------------------------------
+    // ACTUALIZAR INFORMACIÓN GENERAL DEL PACIENTE
+    // ------------------------------------------------------
+    //
+    // Conservamos los datos que ya tenía pacienteDetalle,
+    // como uid o información del vínculo,
+    // y agregamos los datos reales de usuarios/{uid}.
+    // ------------------------------------------------------
+
+    if (respuesta?.paciente) {
+
+      pacienteDetalle.value = {
+
+        ...pacienteDetalle.value,
+
+        ...respuesta.paciente,
+      }
+    }
+
+    // ------------------------------------------------------
+    // HEALTH CONNECT
+    // ------------------------------------------------------
+    //
+    // Si todavía no ha sincronizado datos,
+    // aquí quedará null.
+    // ------------------------------------------------------
+
+    healthPaciente.value =
+      respuesta?.data || null
+
+  } catch (error) {
+
+    console.error(
+      'Error al consultar Health Connect del paciente:',
+      error
+    )
+
+    healthPaciente.value = null
+
+    mensajeErrorHealthPaciente.value =
+      error.message ||
+      'No fue posible consultar los datos de Health Connect.'
+
+  } finally {
+
+    cargandoHealthPaciente.value = false
+  }
+}
+
+// ----------------------------------------------------------
+// FORMATO DE SUEÑO
+// ----------------------------------------------------------
+
+const formatearMinutosSueno = (
+  minutos
+) => {
+  const total =
+    Number(minutos)
+
+  if (
+    !Number.isFinite(total) ||
+    total < 0
+  ) {
+    return 'Sin datos'
+  }
+
+  const horas =
+    Math.floor(
+      total / 60
+    )
+
+  const minutosRestantes =
+    Math.round(
+      total % 60
+    )
+
+  if (horas === 0) {
+    return `${minutosRestantes} min`
+  }
+
+  return `${horas} h ${minutosRestantes} min`
+}
+
+// ----------------------------------------------------------
+// FORMATO DE FECHA DEL DOCUMENTO HEALTH CONNECT
+// ----------------------------------------------------------
+
+const formatearFechaHealth = (
+  fecha
+) => {
+  if (
+    typeof fecha !== 'string'
+  ) {
+    return 'Sin fecha'
+  }
+
+  const partes =
+    fecha.split('-')
+
+  if (partes.length !== 3) {
+    return fecha
+  }
+
+  return `${partes[2]}/${partes[1]}/${partes[0]}`
+}
+
+// ----------------------------------------------------------
+// FORMATO DE ÚLTIMA SINCRONIZACIÓN
+// ----------------------------------------------------------
+//
+// Firebase Admin puede serializar Timestamp como:
+// { seconds, nanoseconds }
+// o:
+// { _seconds, _nanoseconds }
+//
+// También aceptamos texto ISO por compatibilidad.
+// ----------------------------------------------------------
+
+const formatearUltimaSincronizacion = (
+  valor,
+  fechaDocumento = ''
+) => {
+  if (!valor) {
+    return formatearFechaHealth(
+      fechaDocumento
+    )
+  }
+
+  let fecha = null
+
+  if (
+    typeof valor === 'string'
+  ) {
+    const temporal =
+      new Date(valor)
+
+    if (!Number.isNaN(temporal.getTime())) {
+      fecha = temporal
+    }
+  } else if (
+    typeof valor === 'object'
+  ) {
+    const segundos =
+      valor.seconds ??
+      valor._seconds
+
+    if (
+      Number.isFinite(
+        Number(segundos)
+      )
+    ) {
+      fecha =
+        new Date(
+          Number(segundos) * 1000
+        )
+    }
+  }
+
+  if (
+    !fecha ||
+    Number.isNaN(
+      fecha.getTime()
+    )
+  ) {
+    return formatearFechaHealth(
+      fechaDocumento
+    )
+  }
+
+  return fecha.toLocaleString(
+    'es-MX',
+    {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }
+  )
+}
+
+// ----------------------------------------------------------
+// CITAS
+// ----------------------------------------------------------
+
+const citas = ref([])
+const cargandoCitas = ref(false)
+const guardandoCita = ref(false)
+const mostrarFormularioCita = ref(false)
+const citaEnEdicion = ref(null)
+const mensajeCitas = ref('')
+const mensajeErrorCitas = ref('')
+
+// En la vista de Citas reducimos el menú lateral para darle
+// prioridad visual a la agenda. El doctor puede expandirlo
+// temporalmente con el botón ☰.
+const menuAgendaExpandido = ref(false)
+
+// Día que sirve como referencia para la agenda semanal.
+const hoyAgenda = new Date()
+const fechaAgendaISO = ref(
+  `${hoyAgenda.getFullYear()}-${String(hoyAgenda.getMonth() + 1).padStart(2, '0')}-${String(hoyAgenda.getDate()).padStart(2, '0')}`
+)
+
+const formularioCita = ref({
+  pacienteUid: '',
+  fecha: '',
+  hora: '',
+  motivo: '',
+  modalidad: 'Presencial',
+  lugar: '',
+  notas: '',
+  recordatorioActivo: true,
+})
+
+
+// ----------------------------------------------------------
+// RESUMEN VISUAL DEL PACIENTE
+// ----------------------------------------------------------
+// Estos valores se calculan únicamente con información que ya
+// existe en el perfil del paciente. Si falta un dato, se muestra —.
+// ----------------------------------------------------------
+
+const pesoPacienteDetalle = computed(() => {
+  const valor =
+    pacienteDetalle.value?.peso ??
+    healthPaciente.value?.peso ??
+    null
+
+  if (valor == null || valor === '') {
+    return null
+  }
+
+  const numero =
+    Number(
+      String(valor)
+        .replace(',', '.')
+        .replace(/[^0-9.]/g, '')
+    )
+
+  return Number.isFinite(numero)
+    ? numero
+    : null
+})
+
+const estaturaPacienteDetalle = computed(() => {
+  const valor =
+    pacienteDetalle.value?.estatura ??
+    pacienteDetalle.value?.altura ??
+    null
+
+  if (valor == null || valor === '') {
+    return null
+  }
+
+  const numero =
+    Number(
+      String(valor)
+        .replace(',', '.')
+        .replace(/[^0-9.]/g, '')
+    )
+
+  if (!Number.isFinite(numero)) {
+    return null
+  }
+
+  return numero > 3
+    ? numero / 100
+    : numero
+})
+
+const imcPacienteDetalle = computed(() => {
+  const imcGuardado =
+    pacienteDetalle.value?.imc
+
+  if (
+    imcGuardado != null &&
+    imcGuardado !== ''
+  ) {
+    const numero = Number(imcGuardado)
+
+    if (Number.isFinite(numero)) {
+      return numero.toFixed(1)
+    }
+  }
+
+  const peso =
+    pesoPacienteDetalle.value
+
+  const estatura =
+    estaturaPacienteDetalle.value
+
+  if (!peso || !estatura) {
+    return null
+  }
+
+  return (
+    peso /
+    (estatura * estatura)
+  ).toFixed(1)
+})
+
+// ----------------------------------------------------------
+// CALENDARIO VISUAL PARA PROGRAMAR CITAS
+// ----------------------------------------------------------
+// La API sigue recibiendo exactamente los mismos campos.
+// El calendario y los botones de hora solamente facilitan al
+// profesional llenar formularioCita.fecha y formularioCita.hora.
+// ----------------------------------------------------------
+
+const mesCalendarioCita = ref(
+  new Date(
+    new Date().getFullYear(),
+    new Date().getMonth(),
+    1
+  )
+)
+
+const horariosCitaRapidos = [
+  '08:00',
+  '08:30',
+  '09:00',
+  '09:30',
+  '10:00',
+  '10:30',
+  '11:00',
+  '11:30',
+  '12:00',
+  '14:00',
+  '14:30',
+  '15:00',
+  '15:30',
+  '16:00',
+  '16:30',
+]
+
+const tituloMesCalendarioCita = computed(() => {
+  const texto =
+    mesCalendarioCita.value
+      .toLocaleDateString(
+        'es-MX',
+        {
+          month: 'long',
+          year: 'numeric',
+        }
+      )
+
+  return texto.charAt(0).toUpperCase() + texto.slice(1)
+})
+
+const fechaSeleccionadaTexto = computed(() => {
+  if (!formularioCita.value.fecha) {
+    return 'Selecciona una fecha'
+  }
+
+  const [anio, mes, dia] =
+    formularioCita.value.fecha
+      .split('-')
+      .map(Number)
+
+  const fecha =
+    new Date(
+      anio,
+      mes - 1,
+      dia
+    )
+
+  return fecha.toLocaleDateString(
+    'es-MX',
+    {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }
+  )
+})
+
+const diasCalendarioCita = computed(() => {
+  const anio =
+    mesCalendarioCita.value.getFullYear()
+
+  const mes =
+    mesCalendarioCita.value.getMonth()
+
+  const primero =
+    new Date(anio, mes, 1)
+
+  // lunes = 0 ... domingo = 6
+  const desplazamiento =
+    (primero.getDay() + 6) % 7
+
+  const inicio =
+    new Date(
+      anio,
+      mes,
+      1 - desplazamiento
+    )
+
+  return Array.from(
+    { length: 42 },
+    (_, indice) => {
+      const fecha =
+        new Date(
+          inicio.getFullYear(),
+          inicio.getMonth(),
+          inicio.getDate() + indice
+        )
+
+      const yyyy = fecha.getFullYear()
+      const mm = String(fecha.getMonth() + 1).padStart(2, '0')
+      const dd = String(fecha.getDate()).padStart(2, '0')
+      const valor = `${yyyy}-${mm}-${dd}`
+
+      return {
+        valor,
+        dia: fecha.getDate(),
+        esMesActual:
+          fecha.getMonth() === mes,
+        seleccionado:
+          formularioCita.value.fecha === valor,
+      }
+    }
+  )
+})
+
+const cambiarMesCalendarioCita = (cantidad) => {
+  mesCalendarioCita.value =
+    new Date(
+      mesCalendarioCita.value.getFullYear(),
+      mesCalendarioCita.value.getMonth() + cantidad,
+      1
+    )
+}
+
+const seleccionarFechaCalendarioCita = (fecha) => {
+  formularioCita.value.fecha = fecha
+}
+
+const seleccionarHoraCita = (hora) => {
+  formularioCita.value.hora = hora
+}
+
+const horarioCitaOcupado = (hora) => {
+  if (!formularioCita.value.fecha) {
+    return false
+  }
+
+  const fechaApi =
+    convertirFechaParaApi(
+      formularioCita.value.fecha
+    )
+
+  return citas.value.some(
+    (cita) =>
+      cita.id !== citaEnEdicion.value?.id &&
+      cita.fecha === fechaApi &&
+      cita.hora === hora &&
+      cita.estado !== 'cancelada'
+  )
+}
+
+
+// ----------------------------------------------------------
+// AGENDA SEMANAL DEL PROFESIONAL
+// ----------------------------------------------------------
+// Esta parte es solamente una representación visual de las
+// mismas citas que ya obtiene la API. No crea otra colección.
+// ----------------------------------------------------------
+
+const convertirIsoAFechaApi = (fechaIso) => {
+  if (!fechaIso) return ''
+
+  const [anio, mes, dia] =
+    String(fechaIso).split('-')
+
+  return `${dia}/${mes}/${anio}`
+}
+
+const crearFechaLocalDesdeIso = (fechaIso) => {
+  const [anio, mes, dia] =
+    String(fechaIso)
+      .split('-')
+      .map(Number)
+
+  return new Date(
+    anio,
+    mes - 1,
+    dia
+  )
+}
+
+const fechaLocalAIso = (fecha) => {
+  return [
+    fecha.getFullYear(),
+    String(fecha.getMonth() + 1).padStart(2, '0'),
+    String(fecha.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+const inicioSemanaAgenda = computed(() => {
+  const fecha =
+    crearFechaLocalDesdeIso(
+      fechaAgendaISO.value
+    )
+
+  const desplazamiento =
+    (fecha.getDay() + 6) % 7
+
+  return new Date(
+    fecha.getFullYear(),
+    fecha.getMonth(),
+    fecha.getDate() - desplazamiento
+  )
+})
+
+const diasSemanaAgenda = computed(() => {
+  const nombres = [
+    'Lun',
+    'Mar',
+    'Mié',
+    'Jue',
+    'Vie',
+    'Sáb',
+    'Dom',
+  ]
+
+  const hoy = new Date()
+  const hoyIso = fechaLocalAIso(hoy)
+
+  return Array.from(
+    { length: 7 },
+    (_, indice) => {
+      const fecha = new Date(
+        inicioSemanaAgenda.value.getFullYear(),
+        inicioSemanaAgenda.value.getMonth(),
+        inicioSemanaAgenda.value.getDate() + indice
+      )
+
+      const iso = fechaLocalAIso(fecha)
+
+      return {
+        iso,
+        api: convertirIsoAFechaApi(iso),
+        nombre: nombres[indice],
+        numero: fecha.getDate(),
+        hoy: iso === hoyIso,
+        seleccionado:
+          iso === fechaAgendaISO.value,
+      }
+    }
+  )
+})
+
+const tituloSemanaAgenda = computed(() => {
+  const inicio = diasSemanaAgenda.value[0]
+  const fin = diasSemanaAgenda.value[6]
+
+  if (!inicio || !fin) return ''
+
+  const fechaInicio =
+    crearFechaLocalDesdeIso(inicio.iso)
+
+  const fechaFin =
+    crearFechaLocalDesdeIso(fin.iso)
+
+  const mesInicio =
+    fechaInicio.toLocaleDateString(
+      'es-MX',
+      { month: 'short' }
+    )
+
+  const mesFin =
+    fechaFin.toLocaleDateString(
+      'es-MX',
+      { month: 'short' }
+    )
+
+  if (
+    fechaInicio.getMonth() ===
+    fechaFin.getMonth()
+  ) {
+    return `${fechaInicio.getDate()} - ${fechaFin.getDate()} ${mesFin} ${fechaFin.getFullYear()}`
+  }
+
+  return `${fechaInicio.getDate()} ${mesInicio} - ${fechaFin.getDate()} ${mesFin} ${fechaFin.getFullYear()}`
+})
+
+const horasAgendaSemana = [
+  '08:00',
+  '08:30',
+  '09:00',
+  '09:30',
+  '10:00',
+  '10:30',
+  '11:00',
+  '11:30',
+  '12:00',
+  '12:30',
+  '13:00',
+  '13:30',
+  '14:00',
+  '14:30',
+  '15:00',
+  '15:30',
+  '16:00',
+  '16:30',
+  '17:00',
+  '17:30',
+  '18:00',
+]
+
+const citasEnCeldaAgenda = (
+  diaApi,
+  hora
+) => {
+  return citas.value.filter(
+    (cita) =>
+      cita.fecha === diaApi &&
+      cita.hora === hora &&
+      cita.estado !== 'cancelada'
+  )
+}
+
+const seleccionarDiaAgenda = (fechaIso) => {
+  fechaAgendaISO.value = fechaIso
+
+  const fecha =
+    crearFechaLocalDesdeIso(fechaIso)
+
+  mesCalendarioCita.value =
+    new Date(
+      fecha.getFullYear(),
+      fecha.getMonth(),
+      1
+    )
+}
+
+const moverSemanaAgenda = (cantidad) => {
+  const fecha =
+    crearFechaLocalDesdeIso(
+      fechaAgendaISO.value
+    )
+
+  fecha.setDate(
+    fecha.getDate() +
+    cantidad * 7
+  )
+
+  seleccionarDiaAgenda(
+    fechaLocalAIso(fecha)
+  )
+}
+
+const irSemanaActual = () => {
+  seleccionarDiaAgenda(
+    fechaLocalAIso(
+      new Date()
+    )
+  )
+}
+
+const abrirNuevaCitaDesdeAgenda = (
+  fechaIso = fechaAgendaISO.value,
+  hora = ''
+) => {
+  abrirFormularioCita()
+
+  formularioCita.value.fecha =
+    fechaIso
+
+  formularioCita.value.hora =
+    hora
+
+  seleccionarDiaAgenda(fechaIso)
+}
+
+const abrirCitaDesdeAgenda = (cita) => {
+  abrirEditarCita(cita)
+
+  if (formularioCita.value.fecha) {
+    seleccionarDiaAgenda(
+      formularioCita.value.fecha
+    )
+  }
+}
+
+const alternarMenuAgenda = () => {
+  menuAgendaExpandido.value =
+    !menuAgendaExpandido.value
+}
+
+// ----------------------------------------------------------
+// CITAS QUE REQUIEREN ATENCIÓN DEL PROFESIONAL
+// ----------------------------------------------------------
+
+const citasConReagenda = computed(
+  () =>
+    citas.value.filter(
+      (cita) =>
+        cita.estado ===
+        'reagenda_solicitada'
+    )
+)
 
 // ----------------------------------------------------------
 // RESUMEN DEL PANEL
 // ----------------------------------------------------------
 
-const resumen = computed(() => ({
-  pacientes: pacientes.value.length,
-  riesgo: 0,
-  citasHoy: 0,
-}))
+const resumen = computed(() => {
+  const hoy = new Date()
+
+  const dia = String(hoy.getDate()).padStart(2, '0')
+  const mes = String(hoy.getMonth() + 1).padStart(2, '0')
+  const anio = hoy.getFullYear()
+
+  const fechaHoy = `${dia}/${mes}/${anio}`
+
+  return {
+    pacientes: pacientes.value.length,
+    riesgo: 0,
+    citasHoy: citas.value.filter(
+      (cita) =>
+        cita.fecha === fechaHoy &&
+        cita.estado !== 'cancelada'
+    ).length,
+  }
+})
+
+
+// ----------------------------------------------------------
+// DATOS VISUALES DEL PRINCIPAL
+// ----------------------------------------------------------
+// Solo reorganizan información que ya existe.
+// No cambian ninguna regla del sistema.
+// ----------------------------------------------------------
+
+const fechaHoyTexto = computed(() => {
+  return new Date().toLocaleDateString(
+    'es-MX',
+    {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }
+  )
+})
+
+const citasHoyLista = computed(() => {
+  const hoy = new Date()
+  const dia = String(hoy.getDate()).padStart(2, '0')
+  const mes = String(hoy.getMonth() + 1).padStart(2, '0')
+  const anio = hoy.getFullYear()
+  const fechaHoy = `${dia}/${mes}/${anio}`
+
+  return citas.value
+    .filter(
+      (cita) =>
+        cita.fecha === fechaHoy &&
+        cita.estado !== 'cancelada'
+    )
+    .sort((a, b) =>
+      String(a.hora || '').localeCompare(
+        String(b.hora || '')
+      )
+    )
+})
+
+const solicitudesPendientesTotal = computed(() =>
+  citasConReagenda.value.length +
+  solicitudesPendientes.value.length
+)
+
+const citasReagendaPreview = computed(() =>
+  citasConReagenda.value.slice(0, 2)
+)
+
+const seguimientosPendientesPreview = computed(() =>
+  solicitudesPendientes.value.slice(0, 2)
+)
 
 // ----------------------------------------------------------
 // DATOS MOSTRADOS
@@ -171,12 +1420,35 @@ const horarioConsultorio = computed(() => {
 const seleccionarOpcion = (opcion) => {
   opcionActiva.value = opcion
 
+  // La agenda inicia con el menú reducido para aprovechar el ancho.
+  // Al salir de Citas recuperamos el menú normal.
+  if (opcion === 'citas') {
+    menuAgendaExpandido.value = false
+  } else {
+    mostrarFormularioCita.value = false
+    citaEnEdicion.value = null
+  }
+
   mensajeCuenta.value = ''
   mensajeErrorCuenta.value = ''
 
   // Si sale de Mi cuenta, cancelamos una edición sin guardar.
   if (opcion !== 'mi-cuenta') {
     cancelarEdicionCuenta()
+  }
+
+  if (opcion === 'pacientes' && auth.currentUser) {
+    cargarPacientesVinculados(
+      auth.currentUser.uid
+    )
+
+    cargarSolicitudesPendientes(
+      auth.currentUser.uid
+    )
+  }
+
+  if (opcion === 'citas') {
+    cargarCitas()
   }
 }
 
@@ -236,6 +1508,46 @@ const cargarCuentaDoctor = async (usuario) => {
         telefono: datos.consultorio?.telefono || '',
       },
     }
+
+    // También actualizamos/creamos el perfil público.
+    // De esta forma las cuentas profesionales antiguas
+    // quedan reparadas automáticamente al entrar al panel.
+    await sincronizarPerfilProfesional(
+      usuario.uid,
+      {
+        nombreCompleto:
+          datos.nombreCompleto || '',
+
+        profesionRegistrada:
+          datos.profesionRegistrada || '',
+
+        especialidad:
+          datos.especialidad || '',
+
+        cedulaProfesional:
+          datos.cedulaProfesional || '',
+
+        cedulaVerificada:
+          Boolean(datos.cedulaVerificada),
+
+        institucionRegistro:
+          datos.institucionRegistro || null,
+
+        anioRegistro:
+          datos.anioRegistro || null,
+
+        formacionAdicional:
+          Array.isArray(datos.formacionAdicional)
+            ? datos.formacionAdicional
+            : [],
+
+        tieneConsultorio:
+          Boolean(datos.tieneConsultorio),
+
+        consultorio:
+          datos.consultorio || null,
+      }
+    )
   } catch (error) {
     console.error('Error al cargar la cuenta profesional:', error)
 
@@ -333,6 +1645,43 @@ const validarCuentaDoctor = () => {
 }
 
 // ----------------------------------------------------------
+// SINCRONIZAR PERFIL PÚBLICO DEL PROFESIONAL
+// ----------------------------------------------------------
+// "usuarios/{uid}" contiene la información privada/completa
+// de la cuenta.
+//
+// "perfiles_profesionales/{uid}" contiene únicamente los
+// datos profesionales que puede consultar el paciente desde
+// "Mi seguimiento".
+//
+// Esta función mantiene ambos documentos sincronizados.
+// ----------------------------------------------------------
+
+const sincronizarPerfilProfesional = async (
+  uid,
+  cambios = {}
+) => {
+  if (!uid) {
+    return
+  }
+
+  await setDoc(
+    doc(
+      db,
+      'perfiles_profesionales',
+      uid
+    ),
+    {
+      uid,
+      ...cambios,
+    },
+    {
+      merge: true,
+    }
+  )
+}
+
+// ----------------------------------------------------------
 // GUARDAR CUENTA EN FIRESTORE
 // ----------------------------------------------------------
 
@@ -396,6 +1745,28 @@ const guardarCuentaDoctor = async () => {
       { merge: true }
     )
 
+    // Sincronizamos los mismos datos visibles para el
+    // paciente en perfiles_profesionales/{uid}.
+    await sincronizarPerfilProfesional(
+      usuario.uid,
+      {
+        nombreCompleto:
+          datosActualizados.nombreCompleto,
+
+        especialidad:
+          datosActualizados.especialidad,
+
+        cedulaProfesional:
+          datosActualizados.cedulaProfesional,
+
+        tieneConsultorio:
+          datosActualizados.tieneConsultorio,
+
+        consultorio:
+          datosActualizados.consultorio,
+      }
+    )
+
     datosDoctor.value = {
       ...datosDoctor.value,
       ...datosActualizados,
@@ -446,7 +1817,6 @@ const abrirFormularioFormacion = () => {
   mostrarFormularioFormacion.value = true
 }
 
-
 const cancelarFormacion = () => {
   mostrarFormularioFormacion.value = false
   erroresFormacion.value = {}
@@ -454,7 +1824,6 @@ const cancelarFormacion = () => {
   mensajeCedulaFormacion.value = ''
   datosCedulaFormacion.value = null
 }
-
 
 const alCambiarCedulaFormacion = () => {
   formularioFormacion.value.cedulaProfesional =
@@ -470,7 +1839,6 @@ const alCambiarCedulaFormacion = () => {
   }
 }
 
-
 const quitarCedulaFormacion = () => {
   formularioFormacion.value.tieneCedula = false
   formularioFormacion.value.cedulaProfesional = ''
@@ -483,7 +1851,6 @@ const quitarCedulaFormacion = () => {
     delete erroresFormacion.value.cedulaProfesional
   }
 }
-
 
 const verificarCedulaFormacion = async () => {
   const cedula =
@@ -509,23 +1876,12 @@ const verificarCedulaFormacion = async () => {
   estadoCedulaFormacion.value = 'verificando'
 
   try {
-    const respuesta = await fetch(
-      'http://localhost:3001/api/doctores/verificar-cedula',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          cedula,
-          nombreCompleto,
-        }),
-      }
-    )
+    const datos = await verificarCedulaProfesional({
+      cedula,
+      nombreCompleto,
+    })
 
-    const datos = await respuesta.json()
-
-    if (!respuesta.ok || !datos.valida) {
+    if (!datos.valida) {
       estadoCedulaFormacion.value = 'no-encontrada'
 
       mensajeCedulaFormacion.value =
@@ -551,7 +1907,6 @@ const verificarCedulaFormacion = async () => {
       'No se pudo conectar con el servicio de verificación.'
   }
 }
-
 
 const validarFormacion = () => {
   const errores = {}
@@ -604,7 +1959,6 @@ const validarFormacion = () => {
 
   return Object.keys(errores).length === 0
 }
-
 
 const guardarFormacion = async () => {
   if (!validarFormacion()) {
@@ -676,6 +2030,16 @@ const guardarFormacion = async () => {
       }
     )
 
+    // La formación también forma parte del perfil
+    // profesional que consulta el paciente.
+    await sincronizarPerfilProfesional(
+      usuario.uid,
+      {
+        formacionAdicional:
+          nuevaLista,
+      }
+    )
+
     datosDoctor.value.formacionAdicional =
       nuevaLista
 
@@ -695,7 +2059,6 @@ const guardarFormacion = async () => {
     guardandoFormacion.value = false
   }
 }
-
 
 const eliminarFormacion = async (id) => {
   const usuario = auth.currentUser
@@ -729,6 +2092,14 @@ const eliminarFormacion = async (id) => {
       }
     )
 
+    await sincronizarPerfilProfesional(
+      usuario.uid,
+      {
+        formacionAdicional:
+          nuevaLista,
+      }
+    )
+
     datosDoctor.value.formacionAdicional =
       nuevaLista
 
@@ -745,6 +2116,364 @@ const eliminarFormacion = async (id) => {
   }
 }
 
+// ----------------------------------------------------------
+// CITAS - FUNCIONES
+// ----------------------------------------------------------
+
+const cargarCitas = async () => {
+  cargandoCitas.value = true
+  mensajeErrorCitas.value = ''
+
+  try {
+    citas.value = await obtenerCitas()
+  } catch (error) {
+    console.error('Error al cargar citas:', error)
+    mensajeErrorCitas.value =
+      error.message || 'No fue posible cargar las citas.'
+  } finally {
+    cargandoCitas.value = false
+  }
+}
+
+const abrirFormularioCita = () => {
+  citaEnEdicion.value = null
+  mensajeCitas.value = ''
+  mensajeErrorCitas.value = ''
+
+  formularioCita.value = {
+    pacienteUid:
+      pacientes.value.length === 1
+        ? pacientes.value[0].uid
+        : '',
+    fecha: '',
+    hora: '',
+    motivo: '',
+    modalidad: 'Presencial',
+    lugar: '',
+    notas: '',
+    recordatorioActivo: true,
+  }
+
+  mesCalendarioCita.value =
+    new Date(
+      new Date().getFullYear(),
+      new Date().getMonth(),
+      1
+    )
+
+  mostrarFormularioCita.value = true
+}
+
+const abrirEditarCita = (cita) => {
+  citaEnEdicion.value = cita
+  mensajeCitas.value = ''
+  mensajeErrorCitas.value = ''
+
+  const [dia = '', mes = '', anio = ''] =
+    String(cita.fecha || '').split('/')
+
+  formularioCita.value = {
+    pacienteUid: cita.pacienteUid || '',
+    fecha:
+      anio && mes && dia
+        ? `${anio}-${mes}-${dia}`
+        : '',
+    hora: cita.hora || '',
+    motivo: cita.motivo || '',
+    modalidad: cita.modalidad || 'Presencial',
+    lugar: cita.lugar || '',
+    notas: cita.notas || '',
+    recordatorioActivo:
+      cita.recordatorioActivo !== false,
+  }
+
+  if (
+    formularioCita.value.fecha
+  ) {
+    const [anio, mes] =
+      formularioCita.value.fecha
+        .split('-')
+        .map(Number)
+
+    if (anio && mes) {
+      mesCalendarioCita.value =
+        new Date(
+          anio,
+          mes - 1,
+          1
+        )
+    }
+  }
+
+  mostrarFormularioCita.value = true
+}
+
+const cancelarFormularioCita = () => {
+  mostrarFormularioCita.value = false
+  citaEnEdicion.value = null
+}
+
+const convertirFechaParaApi = (fechaHtml) => {
+  if (!fechaHtml) return ''
+
+  const [anio, mes, dia] = fechaHtml.split('-')
+  return `${dia}/${mes}/${anio}`
+}
+
+// ----------------------------------------------------------
+// TEXTO VISIBLE DEL ESTADO DE UNA CITA
+// ----------------------------------------------------------
+
+const textoEstadoCita = (estado) => {
+  const estados = {
+    pendiente:
+      'Pendiente de confirmar',
+
+    confirmada:
+      'Confirmada',
+
+    reagenda_solicitada:
+      'Reagenda solicitada',
+
+    cancelada:
+      'Cancelada',
+
+    completada:
+      'Completada',
+
+    no_asistio:
+      'No asistió',
+  }
+
+  return (
+    estados[estado] ||
+    'Pendiente de confirmar'
+  )
+}
+
+const guardarNuevaCita = async () => {
+  mensajeCitas.value = ''
+  mensajeErrorCitas.value = ''
+
+  if (!formularioCita.value.pacienteUid) {
+    mensajeErrorCitas.value =
+      'Selecciona un paciente vinculado.'
+    return
+  }
+
+  if (!formularioCita.value.fecha) {
+    mensajeErrorCitas.value =
+      'Selecciona la fecha de la cita.'
+    return
+  }
+
+  if (!formularioCita.value.hora) {
+    mensajeErrorCitas.value =
+      'Selecciona la hora de la cita.'
+    return
+  }
+
+  // Si el paciente solicitó una reagenda, el profesional
+  // debe proponer una fecha u hora diferente.
+  if (
+    citaEnEdicion.value?.estado ===
+    'reagenda_solicitada'
+  ) {
+    const fechaNueva =
+      convertirFechaParaApi(
+        formularioCita.value.fecha
+      )
+
+    const fechaSinCambio =
+      fechaNueva ===
+      citaEnEdicion.value.fecha
+
+    const horaSinCambio =
+      formularioCita.value.hora ===
+      citaEnEdicion.value.hora
+
+    if (
+      fechaSinCambio &&
+      horaSinCambio
+    ) {
+      mensajeErrorCitas.value =
+        'Para responder la solicitud, cambia la fecha o la hora de la cita.'
+      return
+    }
+  }
+
+  guardandoCita.value = true
+
+  try {
+    const datosCita = {
+      pacienteUid: formularioCita.value.pacienteUid,
+      fecha: convertirFechaParaApi(
+        formularioCita.value.fecha
+      ),
+      hora: formularioCita.value.hora,
+      motivo: formularioCita.value.motivo.trim(),
+      modalidad: formularioCita.value.modalidad,
+      lugar: formularioCita.value.lugar.trim(),
+      notas: formularioCita.value.notas.trim(),
+      recordatorioActivo:
+        formularioCita.value.recordatorioActivo,
+    }
+
+    let citaGuardada = null
+
+    if (citaEnEdicion.value) {
+      citaGuardada = await actualizarCita(
+        citaEnEdicion.value.id,
+        datosCita
+      )
+
+      citas.value = citas.value.map((cita) =>
+        cita.id === citaGuardada.id
+          ? citaGuardada
+          : cita
+      )
+    } else {
+      citaGuardada = await crearCita(datosCita)
+      citas.value = [
+        ...citas.value,
+        citaGuardada,
+      ]
+    }
+
+    citas.value = citas.value.sort((a, b) => {
+      const convertir = (cita) => {
+        const [dia, mes, anio] = cita.fecha.split('/')
+        return new Date(
+          `${anio}-${mes}-${dia}T${cita.hora}:00`
+        ).getTime()
+      }
+
+      return convertir(a) - convertir(b)
+    })
+
+    const estabaEditando =
+      Boolean(citaEnEdicion.value)
+
+    const eraReagenda =
+      citaEnEdicion.value?.estado ===
+      'reagenda_solicitada'
+
+    mostrarFormularioCita.value = false
+    citaEnEdicion.value = null
+
+    if (eraReagenda) {
+      mensajeCitas.value =
+        'Nueva fecha propuesta. La cita quedó pendiente de confirmación del paciente.'
+    } else {
+      mensajeCitas.value = estabaEditando
+        ? 'Cita actualizada correctamente.'
+        : 'Cita programada correctamente.'
+    }
+  } catch (error) {
+    console.error('Error al crear cita:', error)
+    mensajeErrorCitas.value =
+      error.message || 'No fue posible crear la cita.'
+  } finally {
+    guardandoCita.value = false
+  }
+}
+
+// ----------------------------------------------------------
+// CANCELAR CITA COMO PROFESIONAL
+// ----------------------------------------------------------
+// Conserva la cita en el historial y solo cambia su estado.
+// No usa eliminarCita(), por lo que el registro no desaparece.
+// ----------------------------------------------------------
+
+const cancelarCitaComoDoctor = async (cita) => {
+  if (!cita?.id) {
+    return
+  }
+
+  const confirmar =
+    window.confirm(
+      `¿Deseas cancelar la cita de ${
+        cita.nombrePaciente || 'este paciente'
+      }? La cita permanecerá en el historial.`
+    )
+
+  if (!confirmar) {
+    return
+  }
+
+  mensajeCitas.value = ''
+  mensajeErrorCitas.value = ''
+
+  try {
+    const actualizada =
+      await actualizarCita(
+        cita.id,
+        {
+          estado: 'cancelada',
+        }
+      )
+
+    citas.value =
+      citas.value.map(
+        (actual) =>
+          actual.id === cita.id
+            ? {
+                ...actual,
+                ...actualizada,
+                estado: 'cancelada',
+              }
+            : actual
+      )
+
+    if (
+      citaEnEdicion.value?.id ===
+      cita.id
+    ) {
+      mostrarFormularioCita.value = false
+      citaEnEdicion.value = null
+    }
+
+    mensajeCitas.value =
+      'Cita cancelada correctamente.'
+
+  } catch (error) {
+    console.error(
+      'Error al cancelar cita:',
+      error
+    )
+
+    mensajeErrorCitas.value =
+      error.message ||
+      'No fue posible cancelar la cita.'
+  }
+}
+
+
+const cancelarCitaRegistrada = async (cita) => {
+  const confirmar = window.confirm(
+    `¿Deseas eliminar la cita de ${cita.nombrePaciente || 'este paciente'}?`
+  )
+
+  if (!confirmar) return
+
+  mensajeCitas.value = ''
+  mensajeErrorCitas.value = ''
+
+  try {
+    await eliminarCita(cita.id)
+
+    citas.value = citas.value.filter(
+      (actual) => actual.id !== cita.id
+    )
+
+    mensajeCitas.value =
+      'Cita eliminada correctamente.'
+  } catch (error) {
+    console.error('Error al eliminar cita:', error)
+    mensajeErrorCitas.value =
+      error.message || 'No fue posible eliminar la cita.'
+  }
+}
 
 // ----------------------------------------------------------
 // CERRAR SESIÓN
@@ -774,6 +2503,11 @@ onMounted(() => {
 
       doctorActual.value = usuario
       await cargarCuentaDoctor(usuario)
+
+      await Promise.all([
+        cargarPacientesVinculados(usuario.uid),
+        cargarSolicitudesPendientes(usuario.uid),
+      ])
     }
   )
 })
@@ -786,12 +2520,39 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="panel-doctor">
+  <main
+    class="panel-doctor"
+    :class="{
+      'modo-agenda-doctor': opcionActiva === 'citas',
+      'menu-agenda-expandido':
+        opcionActiva === 'citas' &&
+        menuAgendaExpandido,
+    }"
+  >
 
     <!-- ====================================================
          MENÚ LATERAL
          ==================================================== -->
-    <aside class="menu-doctor">
+    <aside
+      class="menu-doctor"
+      :class="{
+        'menu-doctor-agenda': opcionActiva === 'citas',
+      }"
+    >
+
+      <button
+        v-if="opcionActiva === 'citas'"
+        type="button"
+        class="boton-expandir-menu-agenda"
+        :aria-label="
+          menuAgendaExpandido
+            ? 'Reducir menú'
+            : 'Expandir menú'
+        "
+        @click="alternarMenuAgenda"
+      >
+        ☰
+      </button>
 
       <div class="contenedor-logo-doctor">
         <img
@@ -805,6 +2566,7 @@ onUnmounted(() => {
 
         <button
           type="button"
+          class="boton-menu-doctor"
           :class="{
             activo:
               opcionActiva === 'principal'
@@ -813,26 +2575,33 @@ onUnmounted(() => {
             seleccionarOpcion('principal')
           "
         >
-          <span class="icono-menu">⌂</span>
-          <span>Principal</span>
+          <span class="icono-menu">
+            <House :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Principal</span>
         </button>
 
         <button
           type="button"
+          class="boton-menu-doctor"
           :class="{
             activo:
-              opcionActiva === 'pacientes'
+              opcionActiva === 'pacientes' ||
+              opcionActiva === 'detalle-paciente'
           }"
           @click="
             seleccionarOpcion('pacientes')
           "
         >
-          <span class="icono-menu">♟</span>
-          <span>Pacientes</span>
+          <span class="icono-menu">
+            <Users :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Pacientes</span>
         </button>
 
         <button
           type="button"
+          class="boton-menu-doctor"
           :class="{
             activo:
               opcionActiva === 'resultados'
@@ -841,12 +2610,15 @@ onUnmounted(() => {
             seleccionarOpcion('resultados')
           "
         >
-          <span class="icono-menu">▥</span>
-          <span>Resultados</span>
+          <span class="icono-menu">
+            <FileText :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Resultados</span>
         </button>
 
         <button
           type="button"
+          class="boton-menu-doctor"
           :class="{
             activo:
               opcionActiva === 'citas'
@@ -855,8 +2627,10 @@ onUnmounted(() => {
             seleccionarOpcion('citas')
           "
         >
-          <span class="icono-menu">▦</span>
-          <span>Citas</span>
+          <span class="icono-menu">
+            <CalendarDays :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Citas</span>
         </button>
 
       </nav>
@@ -865,32 +2639,35 @@ onUnmounted(() => {
 
         <button
           type="button"
-          class="boton-mi-cuenta"
+          class="boton-menu-doctor boton-mi-cuenta"
           :class="{
             activo:
               opcionActiva === 'mi-cuenta'
           }"
           @click="irMiCuenta"
         >
-          <span class="icono-menu">○</span>
-          <span>Mi cuenta</span>
+          <span class="icono-menu">
+            <UserRound :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Mi cuenta</span>
         </button>
 
         <div class="linea-menu"></div>
 
         <button
           type="button"
-          class="boton-cerrar-sesion"
+          class="boton-menu-doctor boton-cerrar-sesion"
           @click="cerrarSesion"
         >
-          <span class="icono-menu">↪</span>
-          <span>Cerrar sesión</span>
+          <span class="icono-menu">
+            <LogOut :size="20" :stroke-width="2.2" />
+          </span>
+          <span class="texto-menu">Cerrar sesión</span>
         </button>
 
       </div>
 
     </aside>
-
 
     <!-- ====================================================
          CONTENIDO
@@ -902,140 +2679,1081 @@ onUnmounted(() => {
            ================================================== -->
       <template v-if="opcionActiva === 'principal'">
 
-        <header class="encabezado-panel">
+        <header class="encabezado-panel principal-encabezado-nuevo">
           <div>
-            <span class="etiqueta-panel">
-              Panel profesional
-            </span>
-
-            <h1>
-              Te damos la bienvenida, {{ primerNombreDoctor }}
-            </h1>
-
+            <span class="etiqueta-panel">Panel médico</span>
+            <h1>Principal</h1>
             <p>
-              Aquí podrás consultar a los pacientes que
-              posteriormente sean vinculados a tu seguimiento.
+              Consulta un resumen de tu agenda, tus pacientes
+              y las actividades más importantes del día.
             </p>
           </div>
         </header>
 
+        <section class="resumen-principal-nuevo">
 
-        <section class="tarjetas-resumen">
-
-          <article class="tarjeta-resumen">
-            <span class="titulo-tarjeta">
-              Pacientes en seguimiento
-            </span>
-
-            <strong>
-              {{ resumen.pacientes }}
-            </strong>
-
-            <small>
-              Pacientes vinculados
-            </small>
+          <article class="metrica-principal-nueva">
+            <div class="metrica-icono verde">
+              <Users :size="24" :stroke-width="2" />
+            </div>
+            <div>
+              <span>Pacientes activos</span>
+              <strong>{{ resumen.pacientes }}</strong>
+            </div>
           </article>
 
-
-          <article class="tarjeta-resumen">
-            <span class="titulo-tarjeta">
-              Requieren revisión
-            </span>
-
-            <strong>
-              {{ resumen.riesgo }}
-            </strong>
-
-            <small>
-              Sin alertas por el momento
-            </small>
+          <article class="metrica-principal-nueva">
+            <div class="metrica-icono azul">
+              <CalendarDays :size="24" :stroke-width="2" />
+            </div>
+            <div>
+              <span>Citas hoy</span>
+              <strong>{{ resumen.citasHoy }}</strong>
+            </div>
           </article>
 
+          <article class="metrica-principal-nueva">
+            <div class="metrica-icono naranja">
+              <FileText :size="24" :stroke-width="2" />
+            </div>
+            <div>
+              <span>Solicitudes pendientes</span>
+              <strong>{{ solicitudesPendientesTotal }}</strong>
+            </div>
+          </article>
 
-          <article class="tarjeta-resumen">
-            <span class="titulo-tarjeta">
-              Citas de hoy
-            </span>
-
-            <strong>
-              {{ resumen.citasHoy }}
-            </strong>
-
-            <small>
-              Programadas para hoy
-            </small>
+          <article class="metrica-principal-nueva">
+            <div class="metrica-icono rojo">
+              <Activity :size="24" :stroke-width="2" />
+            </div>
+            <div>
+              <span>Alertas clínicas</span>
+              <strong>{{ resumen.riesgo }}</strong>
+            </div>
           </article>
 
         </section>
 
+        <section class="rejilla-principal-nueva">
 
-        <section class="estado-vacio-doctor">
+          <article class="tarjeta-principal agenda-principal-nueva">
 
-          <div class="icono-vacio-doctor">
-            ♡
+            <div class="cabecera-tarjeta-principal">
+              <div class="titulo-con-icono-principal">
+                <div class="icono-titulo-principal">
+                  <CalendarDays :size="22" :stroke-width="2" />
+                </div>
+                <div>
+                  <h2>Agenda de hoy</h2>
+                  <p>{{ fechaHoyTexto }}</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                class="enlace-principal"
+                @click="seleccionarOpcion('citas')"
+              >
+                Ver agenda completa ›
+              </button>
+            </div>
+
+            <div
+              v-if="citasHoyLista.length > 0"
+              class="lista-agenda-principal"
+            >
+              <article
+                v-for="cita in citasHoyLista.slice(0, 6)"
+                :key="cita.id"
+                class="fila-agenda-principal"
+              >
+                <div class="hora-agenda-principal">
+                  {{ cita.hora }}
+                </div>
+
+                <div
+                  class="punto-agenda-principal"
+                  :class="cita.estado"
+                ></div>
+
+                <div class="datos-agenda-principal">
+                  <strong>
+                    {{ cita.nombrePaciente || 'Paciente' }}
+                  </strong>
+                  <span>
+                    {{ cita.motivo || 'Consulta programada' }}
+                  </span>
+                </div>
+
+                <span class="modalidad-agenda-principal">
+                  {{ cita.modalidad || 'Presencial' }}
+                </span>
+
+                <span
+                  class="estado-agenda-principal"
+                  :class="cita.estado"
+                >
+                  {{ textoEstadoCita(cita.estado) }}
+                </span>
+
+                <button
+                  type="button"
+                  class="boton-ir-agenda"
+                  @click="seleccionarOpcion('citas')"
+                >
+                  ›
+                </button>
+              </article>
+            </div>
+
+            <div v-else class="vacio-principal-compacto">
+              <CalendarDays :size="28" :stroke-width="1.8" />
+              <div>
+                <strong>No hay citas programadas para hoy</strong>
+                <span>Puedes consultar o crear citas desde tu agenda.</span>
+              </div>
+            </div>
+
+          </article>
+
+          <div class="columna-principal-derecha">
+
+            <article class="tarjeta-principal">
+              <div class="cabecera-tarjeta-principal">
+                <div class="titulo-con-icono-principal">
+                  <div class="icono-titulo-principal">
+                    <Activity :size="21" :stroke-width="2" />
+                  </div>
+                  <h2>Alertas recientes</h2>
+                </div>
+              </div>
+
+              <div class="vacio-alertas-principal">
+                <div class="icono-alerta-vacia">✓</div>
+                <div>
+                  <strong>Sin alertas clínicas pendientes</strong>
+                  <p>
+                    Las alertas de seguimiento aparecerán aquí
+                    cuando exista información que requiera revisión.
+                  </p>
+                </div>
+              </div>
+            </article>
+
+            <article class="tarjeta-principal">
+              <div class="cabecera-tarjeta-principal">
+                <div class="titulo-con-icono-principal">
+                  <div class="icono-titulo-principal">
+                    <FileText :size="21" :stroke-width="2" />
+                  </div>
+                  <h2>Solicitudes pendientes</h2>
+                </div>
+              </div>
+
+              <div
+                v-if="
+                  citasReagendaPreview.length > 0 ||
+                  seguimientosPendientesPreview.length > 0
+                "
+                class="lista-solicitudes-principal"
+              >
+
+                <button
+                  v-for="cita in citasReagendaPreview"
+                  :key="`reagenda-${cita.id}`"
+                  type="button"
+                  class="solicitud-principal"
+                  @click="seleccionarOpcion('citas')"
+                >
+                  <div class="solicitud-icono">
+                    <CalendarDays :size="20" :stroke-width="2" />
+                  </div>
+                  <div class="solicitud-contenido">
+                    <strong>Reagendar cita</strong>
+                    <span>{{ cita.nombrePaciente || 'Paciente' }}</span>
+                    <small>Solicitud pendiente de revisión</small>
+                  </div>
+                  <span class="solicitud-etiqueta reagenda">Reagenda</span>
+                  <span class="flecha-solicitud">›</span>
+                </button>
+
+                <button
+                  v-for="solicitud in seguimientosPendientesPreview"
+                  :key="`seguimiento-${solicitud.seguimientoId}`"
+                  type="button"
+                  class="solicitud-principal"
+                  @click="seleccionarOpcion('pacientes')"
+                >
+                  <div class="solicitud-icono seguimiento">
+                    <Users :size="20" :stroke-width="2" />
+                  </div>
+                  <div class="solicitud-contenido">
+                    <strong>Seguimiento pendiente</strong>
+                    <span>Solicitud enviada al paciente</span>
+                    <small>Esperando autorización</small>
+                  </div>
+                  <span class="solicitud-etiqueta seguimiento">Pendiente</span>
+                  <span class="flecha-solicitud">›</span>
+                </button>
+
+              </div>
+
+              <div v-else class="vacio-principal-compacto pequeño">
+                <div>
+                  <strong>No hay solicitudes pendientes</strong>
+                  <span>Todo está al día.</span>
+                </div>
+              </div>
+            </article>
+
+          </div>
+        </section>
+
+        <section class="tarjeta-principal pacientes-principal-nuevo">
+          <div class="cabecera-tarjeta-principal">
+            <div class="titulo-con-icono-principal">
+              <div class="icono-titulo-principal">
+                <Users :size="22" :stroke-width="2" />
+              </div>
+              <div>
+                <h2>Pacientes en seguimiento</h2>
+                <p>Acceso rápido a tus pacientes vinculados.</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              class="enlace-principal"
+              @click="seleccionarOpcion('pacientes')"
+            >
+              Ver todos ›
+            </button>
           </div>
 
-          <div>
-            <h2>
-              Aún no tienes pacientes en seguimiento
-            </h2>
+          <div
+            v-if="pacientes.length > 0"
+            class="tabla-pacientes-principal"
+          >
+            <div class="cabecera-tabla-principal">
+              <span>Paciente</span>
+              <span>Edad</span>
+              <span>Estado</span>
+              <span>Acción</span>
+            </div>
 
-            <p>
-              Los pacientes aparecerán aquí cuando
-              exista una vinculación de seguimiento
-              dentro de Vibra la Vida.
-            </p>
+            <div
+              v-for="paciente in pacientes.slice(0, 4)"
+              :key="paciente.uid"
+              class="fila-paciente-principal"
+            >
+              <div class="paciente-principal-identidad">
+                <div class="avatar-principal-paciente">
+                  {{
+                    (paciente.nombreCompleto || 'P')
+                      .trim()
+                      .charAt(0)
+                      .toUpperCase()
+                  }}
+                </div>
+                <strong>{{ paciente.nombreCompleto || 'Paciente' }}</strong>
+              </div>
+
+              <span>{{ paciente.edad || '—' }}</span>
+              <span class="estado-paciente-principal">Activo</span>
+
+              <button
+                type="button"
+                class="boton-detalle-principal"
+                @click="abrirDetallePaciente(paciente)"
+              >
+                Ver detalle
+              </button>
+            </div>
           </div>
 
+          <div v-else class="vacio-principal-compacto">
+            <Users :size="28" :stroke-width="1.8" />
+            <div>
+              <strong>Aún no tienes pacientes en seguimiento</strong>
+              <span>Entra a Pacientes para enviar tu primera solicitud.</span>
+            </div>
+          </div>
         </section>
 
       </template>
 
+      <!-- ==================================================
+           DETALLE DEL PACIENTE
+           ================================================== -->
+      <template
+        v-else-if="
+          opcionActiva === 'detalle-paciente'
+        "
+      >
+
+        <header class="encabezado-panel detalle-paciente-nuevo-encabezado">
+
+          <div>
+
+            <button
+              type="button"
+              class="boton-volver-pacientes"
+              @click="volverAPacientes"
+            >
+              ← Volver a pacientes
+            </button>
+
+            <span class="etiqueta-panel">
+              Seguimiento
+            </span>
+
+            <h1>
+              {{
+                pacienteDetalle?.nombreCompleto ||
+                'Paciente'
+              }}
+            </h1>
+
+            <p>
+              Información general y resumen de los datos
+              más recientes del paciente.
+            </p>
+
+          </div>
+
+          <button
+            v-if="pacienteDetalle"
+            type="button"
+            class="boton-actualizar-health"
+            :disabled="cargandoHealthPaciente"
+            @click="
+              cargarHealthPaciente(
+                pacienteDetalle.uid
+              )
+            "
+          >
+            {{
+              cargandoHealthPaciente
+                ? 'Actualizando...'
+                : 'Actualizar datos'
+            }}
+          </button>
+
+        </header>
+
+
+        <!-- ================================================
+             IDENTIDAD
+             ================================================ -->
+        <section
+          v-if="pacienteDetalle"
+          class="detalle-paciente-identidad-nueva"
+        >
+
+          <div class="avatar-detalle-paciente-nuevo">
+            {{
+              pacienteDetalle.nombreCompleto
+                ?.charAt(0)
+                ?.toUpperCase() ||
+              'P'
+            }}
+          </div>
+
+          <div class="detalle-paciente-datos-nuevos">
+
+            <strong>
+              {{
+                pacienteDetalle.nombreCompleto ||
+                'Paciente'
+              }}
+            </strong>
+
+            <div class="detalle-paciente-metadatos">
+
+              <span>
+                Edad:
+                {{
+                  pacienteDetalle.edad ||
+                  'No registrada'
+                }}
+              </span>
+
+              <span>
+                Sexo:
+                {{
+                  pacienteDetalle.genero ||
+                  'No registrado'
+                }}
+              </span>
+
+              <span>
+                {{
+                  pacienteDetalle.correo ||
+                  pacienteDetalle.email ||
+                  'Correo no registrado'
+                }}
+              </span>
+
+            </div>
+
+          </div>
+
+          <span class="estado-vinculo-activo detalle-estado-activo">
+            Seguimiento activo
+          </span>
+
+        </section>
+
+
+        <section
+          v-if="cargandoHealthPaciente"
+          class="estado-vacio-doctor"
+        >
+          <div class="icono-vacio-doctor">
+            ↻
+          </div>
+
+          <div>
+            <h2>
+              Consultando Health Connect...
+            </h2>
+
+            <p>
+              Estamos obteniendo la última información
+              sincronizada por el paciente.
+            </p>
+          </div>
+        </section>
+
+
+        <section
+          v-else-if="mensajeErrorHealthPaciente"
+          class="estado-vacio-doctor estado-error-health"
+        >
+          <div class="icono-vacio-doctor">
+            !
+          </div>
+
+          <div>
+            <h2>
+              No fue posible cargar los datos
+            </h2>
+
+            <p>
+              {{ mensajeErrorHealthPaciente }}
+            </p>
+          </div>
+        </section>
+
+
+        <template v-else>
+
+          <!-- ================================================
+               RESUMEN CLARO
+               ================================================ -->
+          <section class="detalle-resumen-paciente-nuevo">
+
+            <div class="detalle-resumen-cabecera">
+
+              <div>
+                <h2>
+                  Resumen del paciente
+                </h2>
+
+                <p>
+                  Datos principales para una revisión rápida.
+                </p>
+              </div>
+
+              <div
+                v-if="healthPaciente"
+                class="detalle-ultima-sincronizacion"
+              >
+                <span>
+                  Última sincronización
+                </span>
+
+                <strong>
+                  {{
+                    formatearUltimaSincronizacion(
+                      healthPaciente.fechaSincronizacion,
+                      healthPaciente.fecha ||
+                      healthPaciente.id
+                    )
+                  }}
+                </strong>
+              </div>
+
+            </div>
+
+
+            <div class="detalle-metricas-principales">
+
+              <article class="detalle-metrica-card">
+                <span class="detalle-metrica-icono peso">⚖</span>
+
+                <div>
+                  <span>Peso</span>
+
+                  <strong>
+                    {{
+                      pesoPacienteDetalle != null
+                        ? `${pesoPacienteDetalle} kg`
+                        : '—'
+                    }}
+                  </strong>
+
+                  <small>
+                    Último registro disponible
+                  </small>
+                </div>
+              </article>
+
+
+              <article class="detalle-metrica-card">
+                <span class="detalle-metrica-icono sueno">☾</span>
+
+                <div>
+                  <span>Sueño</span>
+
+                  <strong>
+                    {{
+                      healthPaciente
+                        ? formatearMinutosSueno(
+                            healthPaciente.suenoMinutos
+                          )
+                        : '—'
+                    }}
+                  </strong>
+
+                  <small>
+                    Tiempo total registrado
+                  </small>
+                </div>
+              </article>
+
+
+              <article class="detalle-metrica-card">
+                <span class="detalle-metrica-icono pasos">◒</span>
+
+                <div>
+                  <span>Pasos</span>
+
+                  <strong>
+                    {{
+                      healthPaciente?.pasos ??
+                      '—'
+                    }}
+                  </strong>
+
+                  <small>
+                    Actividad registrada en el día
+                  </small>
+                </div>
+              </article>
+
+
+              <article class="detalle-metrica-card">
+                <span class="detalle-metrica-icono corazon">♥</span>
+
+                <div>
+                  <span>Frecuencia cardiaca</span>
+
+                  <strong>
+                    {{
+                      healthPaciente?.frecuenciaCardiaca ??
+                      '—'
+                    }}
+                    <small
+                      v-if="
+                        healthPaciente?.frecuenciaCardiaca != null
+                      "
+                    >
+                      lpm
+                    </small>
+                  </strong>
+
+                  <small>
+                    {{
+                      healthPaciente?.frecuenciaCardiacaMinima != null ||
+                      healthPaciente?.frecuenciaCardiacaMaxima != null
+                        ? `Min. ${healthPaciente.frecuenciaCardiacaMinima ?? '—'} · Máx. ${healthPaciente.frecuenciaCardiacaMaxima ?? '—'}`
+                        : 'Sin rango disponible'
+                    }}
+                  </small>
+                </div>
+              </article>
+
+            </div>
+
+
+            <div class="detalle-metricas-secundarias">
+
+              <article>
+                <span>IMC</span>
+                <strong>
+                  {{
+                    imcPacienteDetalle ||
+                    '—'
+                  }}
+                </strong>
+                <small>
+                  Último valor disponible
+                </small>
+              </article>
+
+              <article>
+                <span>Edad</span>
+                <strong>
+                  {{
+                    pacienteDetalle?.edad ||
+                    '—'
+                  }}
+                </strong>
+                <small>
+                  Perfil del paciente
+                </small>
+              </article>
+
+              <article>
+                <span>Estatura</span>
+                <strong>
+                  {{
+                    pacienteDetalle?.estatura ||
+                    pacienteDetalle?.altura ||
+                    '—'
+                  }}
+                </strong>
+                <small>
+                  Perfil del paciente
+                </small>
+              </article>
+
+              <article>
+                <span>Fuente</span>
+                <strong>
+                  {{
+                    healthPaciente?.fuente ||
+                    'Sin sincronización'
+                  }}
+                </strong>
+                <small>
+                  Datos de salud conectados
+                </small>
+              </article>
+
+            </div>
+
+          </section>
+
+
+          <!-- ================================================
+               RESULTADOS RECIENTES
+               ================================================ -->
+          <section class="detalle-secciones-inferiores">
+
+            <article class="detalle-resultados-recientes">
+
+              <div class="detalle-seccion-titulo">
+                <div>
+                  <h2>
+                    Resultados recientes
+                  </h2>
+
+                  <p>
+                    Accesos rápidos a las evaluaciones del paciente.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  @click="seleccionarOpcion('resultados')"
+                >
+                  Ver todos
+                </button>
+              </div>
+
+              <div class="detalle-lista-resultados">
+
+                <div class="detalle-resultado-fila">
+                  <span class="detalle-resultado-icono imc">IMC</span>
+                  <div>
+                    <strong>Índice de masa corporal</strong>
+                    <small>
+                      {{
+                        imcPacienteDetalle
+                          ? `Último valor: ${imcPacienteDetalle}`
+                          : 'Sin registros disponibles'
+                      }}
+                    </small>
+                  </div>
+                </div>
+
+                <div class="detalle-resultado-fila">
+                  <span class="detalle-resultado-icono dass">D</span>
+                  <div>
+                    <strong>DASS-21</strong>
+                    <small>
+                      Consulta los resultados de bienestar emocional.
+                    </small>
+                  </div>
+                </div>
+
+                <div class="detalle-resultado-fila">
+                  <span class="detalle-resultado-icono ais">A</span>
+                  <div>
+                    <strong>AIS · Calidad del sueño</strong>
+                    <small>
+                      Consulta las evaluaciones registradas.
+                    </small>
+                  </div>
+                </div>
+
+                <div class="detalle-resultado-fila">
+                  <span class="detalle-resultado-icono habitos">H</span>
+                  <div>
+                    <strong>Hábitos saludables</strong>
+                    <small>
+                      Progreso y evaluaciones educativas.
+                    </small>
+                  </div>
+                </div>
+
+              </div>
+
+            </article>
+
+
+            <article class="detalle-descanso-nuevo">
+
+              <div class="detalle-seccion-titulo">
+                <div>
+                  <h2>
+                    Desglose del descanso
+                  </h2>
+
+                  <p>
+                    Información recibida desde Health Connect.
+                  </p>
+                </div>
+              </div>
+
+              <div class="detalle-descanso-grid">
+
+                <div>
+                  <span>Ligero</span>
+                  <strong>
+                    {{
+                      healthPaciente
+                        ? formatearMinutosSueno(
+                            healthPaciente.suenoLigeroMinutos
+                          )
+                        : '—'
+                    }}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Profundo</span>
+                  <strong>
+                    {{
+                      healthPaciente
+                        ? formatearMinutosSueno(
+                            healthPaciente.suenoProfundoMinutos
+                          )
+                        : '—'
+                    }}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>REM</span>
+                  <strong>
+                    {{
+                      healthPaciente
+                        ? formatearMinutosSueno(
+                            healthPaciente.suenoRemMinutos
+                          )
+                        : '—'
+                    }}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Despierto</span>
+                  <strong>
+                    {{
+                      healthPaciente
+                        ? formatearMinutosSueno(
+                            healthPaciente.despiertoMinutos
+                          )
+                        : '—'
+                    }}
+                  </strong>
+                </div>
+
+              </div>
+
+              <div
+                v-if="!healthPaciente"
+                class="detalle-descanso-aviso"
+              >
+                Aún no hay datos de descanso sincronizados.
+              </div>
+
+            </article>
+
+          </section>
+
+        </template>
+
+      </template>
 
       <!-- ==================================================
            PACIENTES
            ================================================== -->
       <template v-else-if="opcionActiva === 'pacientes'">
 
-        <header class="encabezado-panel">
+        <header class="encabezado-panel encabezado-pacientes pacientes-primera-imagen-encabezado">
           <div>
-            <span class="etiqueta-panel">
-              Seguimiento
-            </span>
-
-            <h1>
-              Pacientes
-            </h1>
-
-            <p>
-              En este apartado aparecerán únicamente
-              los pacientes vinculados a tu seguimiento.
-            </p>
+            <span class="etiqueta-panel">Seguimiento</span>
+            <h1>Pacientes</h1>
+            <p>Consulta tus pacientes vinculados, solicita nuevos seguimientos o quita vínculos existentes.</p>
           </div>
+
+          <button
+            type="button"
+            class="boton-agregar-paciente"
+            @click="abrirModalPaciente"
+          >
+            + Agregar paciente
+          </button>
         </header>
 
+        <section class="pacientes-primera-imagen">
 
-        <section class="estado-vacio-doctor">
+          <div class="pacientes-primera-imagen-barra">
+            <div class="pacientes-tabs-simples">
+              <div class="paciente-tab-simple activo">
+                Mis pacientes <span>({{ pacientes.length }})</span>
+              </div>
+            </div>
 
-          <div class="icono-vacio-doctor">
-            ♡
+            <label class="buscador-pacientes-lista">
+              <span aria-hidden="true">⌕</span>
+              <input
+                v-model="textoFiltroPacientes"
+                type="search"
+                placeholder="Buscar por nombre..."
+                autocomplete="off"
+              />
+            </label>
           </div>
 
-          <div>
-            <h2>
-              No hay pacientes vinculados
-            </h2>
+          <section v-if="cargandoPacientes" class="estado-vacio-doctor pacientes-estado-simple">
+            <div>
+              <h2>Cargando pacientes...</h2>
+              <p>Estamos consultando tus vínculos activos.</p>
+            </div>
+          </section>
 
-            <p>
-              Por ahora no existe información de
-              pacientes disponible para esta cuenta.
-            </p>
-          </div>
+          <section v-else-if="mensajeErrorPacientes" class="estado-vacio-doctor pacientes-estado-simple">
+            <div>
+              <h2>No fue posible cargar pacientes</h2>
+              <p>{{ mensajeErrorPacientes }}</p>
+            </div>
+          </section>
 
+          <section v-else-if="pacientesFiltrados.length > 0" class="pacientes-listado-simple">
+            <div class="pacientes-cabecera-simple pacientes-cabecera-minima">
+              <span>Paciente</span>
+              <span>Estado</span>
+              <span>Acciones</span>
+            </div>
+
+            <article
+              v-for="paciente in pacientesFiltrados"
+              :key="paciente.uid"
+              class="paciente-fila-simple paciente-fila-minima"
+            >
+              <div class="paciente-identidad-simple">
+                <div class="paciente-avatar-simple">
+                  {{ (paciente.nombreCompleto || 'P').trim().charAt(0).toUpperCase() }}
+                </div>
+
+                <div>
+                  <strong>{{ paciente.nombreCompleto || 'Paciente' }}</strong>
+                  <p>Paciente vinculado</p>
+                </div>
+              </div>
+
+              <div>
+                <span class="paciente-estado-simple">
+                  <span class="punto-estado-simple"></span>
+                  Activo
+                </span>
+              </div>
+
+              <div class="paciente-acciones-simple">
+                <button
+                  type="button"
+                  class="paciente-boton-detalle-simple"
+                  @click="abrirDetallePaciente(paciente)"
+                >
+                  Ver detalle
+                </button>
+
+                <button
+                  type="button"
+                  class="paciente-boton-quitar-simple"
+                  @click="quitarPaciente(paciente)"
+                >
+                  Quitar
+                </button>
+              </div>
+            </article>
+          </section>
+
+          <section
+            v-else-if="textoFiltroPacientes.trim() && pacientes.length > 0"
+            class="estado-vacio-doctor pacientes-estado-simple"
+          >
+            <div>
+              <h2>No encontramos coincidencias</h2>
+              <p>Prueba con otro nombre.</p>
+            </div>
+          </section>
+
+          <section v-else class="estado-vacio-doctor pacientes-estado-simple">
+            <div class="icono-vacio-doctor">♡</div>
+            <div>
+              <h2>No hay pacientes vinculados</h2>
+              <p>Presiona “Agregar paciente” para buscar personas registradas y enviar una solicitud de seguimiento.</p>
+            </div>
+          </section>
         </section>
 
-      </template>
+        <!-- Conservamos el panel lateral para agregar paciente -->
+        <div
+          v-if="mostrarModalPaciente"
+          class="fondo-panel-paciente"
+          @click.self="cerrarModalPaciente"
+        >
+          <aside class="panel-agregar-paciente">
+            <div class="cabecera-panel-agregar-paciente">
+              <div>
+                <h2>Agregar paciente al seguimiento</h2>
+                <p>Busca un paciente registrado en la plataforma y envíale una solicitud de seguimiento.</p>
+              </div>
 
+              <button
+                type="button"
+                class="boton-cerrar-panel-paciente"
+                aria-label="Cerrar"
+                @click="cerrarModalPaciente"
+              >×</button>
+            </div>
+
+            <section class="paso-agregar-paciente">
+              <h3>1. Buscar paciente</h3>
+
+              <div class="buscador-panel-paciente">
+                <span class="icono-buscador-panel">⌕</span>
+                <input
+                  v-model="textoBusquedaPaciente"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="Buscar paciente..."
+                  @input="alEscribirBusquedaPaciente"
+                />
+              </div>
+
+              <p
+                v-if="textoBusquedaPaciente.length > 0 && textoBusquedaPaciente.length < 2"
+                class="ayuda-busqueda-paciente"
+              >Escribe al menos 2 caracteres para buscar.</p>
+
+              <p v-if="buscandoPaciente" class="estado-busqueda-paciente">Buscando pacientes...</p>
+
+              <div
+                v-else-if="resultadosBusquedaPaciente.length > 0"
+                class="resultados-panel-paciente"
+              >
+                <button
+                  v-for="paciente in resultadosBusquedaPaciente"
+                  :key="paciente.uid"
+                  type="button"
+                  class="resultado-panel-paciente"
+                  :class="{ seleccionado: pacienteSeleccionadoSolicitud?.uid === paciente.uid }"
+                  :disabled="pacienteYaVinculado(paciente.uid) || pacienteConSolicitudPendiente(paciente.uid)"
+                  @click="pacienteSeleccionadoSolicitud = paciente"
+                >
+                  <div class="avatar-resultado-panel">
+                    {{ (paciente.nombreCompleto || 'P').trim().charAt(0).toUpperCase() }}
+                  </div>
+
+                  <div class="datos-resultado-panel">
+                    <strong>{{ paciente.nombreCompleto || 'Paciente registrado' }}</strong>
+                    <span v-if="pacienteYaVinculado(paciente.uid)" class="estado-resultado ya-vinculado">Paciente ya vinculado</span>
+                    <span v-else-if="pacienteConSolicitudPendiente(paciente.uid)" class="estado-resultado pendiente">Solicitud pendiente</span>
+                    <span v-else class="estado-resultado disponible">Paciente registrado</span>
+                  </div>
+
+                  <span class="flecha-resultado-panel">›</span>
+                </button>
+              </div>
+            </section>
+
+            <section v-if="pacienteSeleccionadoSolicitud" class="paso-agregar-paciente">
+              <h3>2. Paciente seleccionado</h3>
+
+              <article class="paciente-seleccionado-panel">
+                <div class="avatar-paciente-seleccionado">
+                  {{ (pacienteSeleccionadoSolicitud.nombreCompleto || 'P').trim().charAt(0).toUpperCase() }}
+                </div>
+
+                <div>
+                  <strong>{{ pacienteSeleccionadoSolicitud.nombreCompleto || 'Paciente registrado' }}</strong>
+                  <span>Paciente registrado en Vibra la Vida</span>
+                </div>
+              </article>
+
+              <div class="aviso-autorizacion-panel">
+                <div class="icono-aviso-autorizacion">i</div>
+                <p><strong>El paciente deberá autorizar tu acceso</strong> antes de que puedas consultar sus datos.</p>
+              </div>
+            </section>
+
+            <p
+              v-if="mensajeBusquedaPaciente"
+              class="mensaje-busqueda-paciente"
+              :class="tipoMensajeBusquedaPaciente"
+            >{{ mensajeBusquedaPaciente }}</p>
+
+            <div class="acciones-panel-paciente">
+              <button
+                type="button"
+                class="boton-enviar-seguimiento"
+                :disabled="!pacienteSeleccionadoSolicitud || agregandoPacienteUid === pacienteSeleccionadoSolicitud?.uid"
+                @click="agregarPaciente(pacienteSeleccionadoSolicitud)"
+              >
+                {{
+                  agregandoPacienteUid === pacienteSeleccionadoSolicitud?.uid
+                    ? 'Enviando...'
+                    : 'Enviar solicitud de seguimiento'
+                }}
+              </button>
+
+              <button
+                type="button"
+                class="boton-cancelar-panel-paciente"
+                @click="cerrarModalPaciente"
+              >Cancelar</button>
+            </div>
+          </aside>
+        </div>
+
+      </template>
 
       <!-- ==================================================
            RESULTADOS
@@ -1059,7 +3777,6 @@ onUnmounted(() => {
           </div>
         </header>
 
-
         <section class="estado-vacio-doctor">
 
           <div class="icono-vacio-doctor">
@@ -1081,51 +3798,570 @@ onUnmounted(() => {
 
       </template>
 
-
       <!-- ==================================================
            CITAS
            ================================================== -->
       <template v-else-if="opcionActiva === 'citas'">
 
-        <header class="encabezado-panel">
-          <div>
-            <span class="etiqueta-panel">
-              Agenda
-            </span>
+        <section class="agenda-profesional-vibra">
 
-            <h1>
-              Citas
-            </h1>
+          <!-- ==================================================
+               COLUMNA IZQUIERDA: MINI CALENDARIO
+               ================================================== -->
+          <aside class="agenda-columna-mini">
 
-            <p>
-              Aquí administraremos posteriormente
-              las citas de tus pacientes.
+            <div class="agenda-mini-cabecera">
+              <div>
+                <span class="agenda-mini-etiqueta">
+                  Agenda
+                </span>
+
+                <h1>
+                  Citas
+                </h1>
+              </div>
+            </div>
+
+
+            <button
+              type="button"
+              class="boton-crear-cita-agenda"
+              :disabled="pacientes.length === 0"
+              @click="abrirNuevaCitaDesdeAgenda()"
+            >
+              <span>＋</span>
+              Crear cita
+            </button>
+
+
+            <div class="mini-calendario-agenda">
+
+              <div class="mini-calendario-cabecera">
+                <button
+                  type="button"
+                  aria-label="Mes anterior"
+                  @click="cambiarMesCalendarioCita(-1)"
+                >
+                  ‹
+                </button>
+
+                <strong>
+                  {{ tituloMesCalendarioCita }}
+                </strong>
+
+                <button
+                  type="button"
+                  aria-label="Mes siguiente"
+                  @click="cambiarMesCalendarioCita(1)"
+                >
+                  ›
+                </button>
+              </div>
+
+
+              <div class="mini-calendario-semana">
+                <span>L</span>
+                <span>M</span>
+                <span>M</span>
+                <span>J</span>
+                <span>V</span>
+                <span>S</span>
+                <span>D</span>
+              </div>
+
+
+              <div class="mini-calendario-dias">
+                <button
+                  v-for="dia in diasCalendarioCita"
+                  :key="`mini-${dia.valor}`"
+                  type="button"
+                  :class="{
+                    'otro-mes': !dia.esMesActual,
+                    seleccionado:
+                      dia.valor === fechaAgendaISO,
+                  }"
+                  @click="seleccionarDiaAgenda(dia.valor)"
+                >
+                  {{ dia.dia }}
+                </button>
+              </div>
+
+            </div>
+
+
+            <div class="agenda-mini-leyenda">
+              <strong>
+                Estados
+              </strong>
+
+              <span>
+                <i class="punto-estado confirmada"></i>
+                Confirmada
+              </span>
+
+              <span>
+                <i class="punto-estado pendiente"></i>
+                Pendiente
+              </span>
+
+              <span>
+                <i class="punto-estado reagenda"></i>
+                Reagenda
+              </span>
+            </div>
+
+          </aside>
+
+
+          <!-- ==================================================
+               CENTRO: CALENDARIO SEMANAL GRANDE
+               ================================================== -->
+          <section class="agenda-semanal-doctor">
+
+            <div class="agenda-semanal-cabecera">
+
+              <div>
+                <span class="agenda-semanal-subtitulo">
+                  Calendario semanal
+                </span>
+
+                <h2>
+                  {{ tituloSemanaAgenda }}
+                </h2>
+              </div>
+
+
+              <div class="agenda-semanal-controles">
+                <button
+                  type="button"
+                  class="boton-hoy-agenda"
+                  @click="irSemanaActual"
+                >
+                  Hoy
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Semana anterior"
+                  @click="moverSemanaAgenda(-1)"
+                >
+                  ‹
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Semana siguiente"
+                  @click="moverSemanaAgenda(1)"
+                >
+                  ›
+                </button>
+              </div>
+
+            </div>
+
+
+            <p
+              v-if="mensajeCitas"
+              class="mensaje-citas-doctor exito agenda-mensaje"
+            >
+              {{ mensajeCitas }}
             </p>
-          </div>
-        </header>
 
-
-        <section class="estado-vacio-doctor">
-
-          <div class="icono-vacio-doctor">
-            ▦
-          </div>
-
-          <div>
-            <h2>
-              No tienes citas registradas
-            </h2>
-
-            <p>
-              Cuando configuremos el módulo de citas
-              aparecerán aquí.
+            <p
+              v-if="mensajeErrorCitas"
+              class="mensaje-citas-doctor error agenda-mensaje"
+            >
+              {{ mensajeErrorCitas }}
             </p>
-          </div>
+
+
+            <div
+              v-if="cargandoCitas"
+              class="agenda-cargando"
+            >
+              Cargando agenda...
+            </div>
+
+
+            <div
+              v-else
+              class="agenda-semana-scroll"
+            >
+
+              <div class="agenda-semana-grid">
+
+                <!-- Encabezado -->
+                <div class="agenda-esquina-hora"></div>
+
+                <button
+                  v-for="dia in diasSemanaAgenda"
+                  :key="`cabecera-${dia.iso}`"
+                  type="button"
+                  class="agenda-dia-cabecera"
+                  :class="{
+                    hoy: dia.hoy,
+                    seleccionado: dia.seleccionado,
+                  }"
+                  @click="seleccionarDiaAgenda(dia.iso)"
+                >
+                  <span>
+                    {{ dia.nombre }}
+                  </span>
+
+                  <strong>
+                    {{ dia.numero }}
+                  </strong>
+                </button>
+
+
+                <!-- Horas y celdas -->
+                <template
+                  v-for="hora in horasAgendaSemana"
+                  :key="`fila-${hora}`"
+                >
+
+                  <div class="agenda-hora-lateral">
+                    {{ hora }}
+                  </div>
+
+
+                  <div
+                    v-for="dia in diasSemanaAgenda"
+                    :key="`${dia.iso}-${hora}`"
+                    class="agenda-celda-hora"
+                    :class="{
+                      hoy: dia.hoy,
+                    }"
+                    @dblclick="
+                      abrirNuevaCitaDesdeAgenda(
+                        dia.iso,
+                        hora
+                      )
+                    "
+                  >
+
+                    <button
+                      v-if="
+                        citasEnCeldaAgenda(
+                          dia.api,
+                          hora
+                        ).length === 0
+                      "
+                      type="button"
+                      class="agenda-celda-vacia"
+                      :aria-label="`Crear cita ${dia.api} ${hora}`"
+                      @click="
+                        abrirNuevaCitaDesdeAgenda(
+                          dia.iso,
+                          hora
+                        )
+                      "
+                    >
+                      <span>＋</span>
+                    </button>
+
+
+                    <button
+                      v-for="cita in citasEnCeldaAgenda(
+                        dia.api,
+                        hora
+                      )"
+                      :key="cita.id"
+                      type="button"
+                      class="bloque-cita-agenda"
+                      :class="cita.estado"
+                      @click="abrirCitaDesdeAgenda(cita)"
+                    >
+                      <strong>
+                        {{ cita.hora }}
+                      </strong>
+
+                      <span>
+                        {{ cita.nombrePaciente || 'Paciente' }}
+                      </span>
+
+                      <small>
+                        {{ cita.motivo || 'Consulta' }}
+                      </small>
+                    </button>
+
+                  </div>
+
+                </template>
+
+              </div>
+
+            </div>
+
+          </section>
+
+
+          <!-- ==================================================
+               PANEL DERECHO DESPLEGABLE
+               ================================================== -->
+          <aside
+            v-if="mostrarFormularioCita"
+            class="agenda-panel-derecho"
+          >
+
+            <div class="agenda-panel-derecho-cabecera">
+
+              <div>
+                <span class="mini-etiqueta-agenda-panel">
+                  {{
+                    citaEnEdicion?.estado === 'reagenda_solicitada'
+                      ? 'Reagenda solicitada'
+                      : citaEnEdicion
+                        ? 'Detalle de cita'
+                        : 'Nueva cita'
+                  }}
+                </span>
+
+                <h2>
+                  {{
+                    citaEnEdicion
+                      ? 'Información de la cita'
+                      : 'Crear cita'
+                  }}
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                class="boton-cerrar-panel-agenda"
+                aria-label="Cerrar panel"
+                @click="cancelarFormularioCita"
+              >
+                ×
+              </button>
+
+            </div>
+
+
+            <div
+              v-if="citaEnEdicion?.estado === 'reagenda_solicitada'"
+              class="aviso-reagenda-panel-agenda"
+            >
+              <strong>
+                El paciente solicitó reagendar
+              </strong>
+
+              <span v-if="citaEnEdicion.motivoReagenda">
+                Motivo: {{ citaEnEdicion.motivoReagenda }}
+              </span>
+
+              <span v-if="citaEnEdicion.fechaSolicitadaPaciente">
+                Fecha sugerida: {{ citaEnEdicion.fechaSolicitadaPaciente }}
+              </span>
+
+              <span v-if="citaEnEdicion.horaSolicitadaPaciente">
+                Hora sugerida: {{ citaEnEdicion.horaSolicitadaPaciente }}
+              </span>
+            </div>
+
+
+            <div class="agenda-panel-contenido">
+
+              <label class="campo-agenda-panel campo-agenda-completo">
+                <span>
+                  Paciente *
+                </span>
+
+                <select
+                  v-model="formularioCita.pacienteUid"
+                  :disabled="Boolean(citaEnEdicion)"
+                >
+                  <option value="">
+                    Selecciona un paciente
+                  </option>
+
+                  <option
+                    v-for="paciente in pacientes"
+                    :key="paciente.uid"
+                    :value="paciente.uid"
+                  >
+                    {{
+                      paciente.nombreCompleto ||
+                      paciente.nombre ||
+                      paciente.uid
+                    }}
+                  </option>
+                </select>
+              </label>
+
+
+              <div class="agenda-panel-fecha-hora">
+
+                <label class="campo-agenda-panel">
+                  <span>
+                    Fecha
+                  </span>
+
+                  <button
+                    type="button"
+                    class="campo-agenda-resumen"
+                    @click="
+                      formularioCita.fecha &&
+                      seleccionarDiaAgenda(
+                        formularioCita.fecha
+                      )
+                    "
+                  >
+                    {{
+                      formularioCita.fecha
+                        ? fechaSeleccionadaTexto
+                        : 'Selecciona en el calendario'
+                    }}
+                  </button>
+                </label>
+
+
+                <label class="campo-agenda-panel">
+                  <span>
+                    Hora
+                  </span>
+
+                  <div class="campo-agenda-resumen hora">
+                    {{
+                      formularioCita.hora ||
+                      'Selecciona una hora'
+                    }}
+                  </div>
+                </label>
+
+              </div>
+
+
+              <div class="agenda-panel-dos-columnas">
+
+                <label class="campo-agenda-panel">
+                  <span>
+                    Modalidad
+                  </span>
+
+                  <select v-model="formularioCita.modalidad">
+                    <option>
+                      Presencial
+                    </option>
+
+                    <option>
+                      Virtual
+                    </option>
+                  </select>
+                </label>
+
+
+                <label class="campo-agenda-panel">
+                  <span>
+                    Lugar
+                  </span>
+
+                  <input
+                    v-model="formularioCita.lugar"
+                    type="text"
+                    placeholder="Consultorio o enlace"
+                  />
+                </label>
+
+              </div>
+
+
+              <label class="campo-agenda-panel campo-agenda-completo">
+                <span>
+                  Motivo
+                </span>
+
+                <input
+                  v-model="formularioCita.motivo"
+                  type="text"
+                  placeholder="Ej. Seguimiento general"
+                />
+              </label>
+
+
+              <label class="campo-agenda-panel campo-agenda-completo">
+                <span>
+                  Notas
+                </span>
+
+                <textarea
+                  v-model="formularioCita.notas"
+                  rows="5"
+                  placeholder="Indicaciones opcionales para la cita"
+                ></textarea>
+              </label>
+
+
+              <label class="recordatorio-panel-agenda">
+                <input
+                  v-model="formularioCita.recordatorioActivo"
+                  type="checkbox"
+                />
+
+                <div>
+                  <strong>
+                    Recordatorio para el paciente
+                  </strong>
+
+                  <span>
+                    Mantener activo el recordatorio de esta cita.
+                  </span>
+                </div>
+              </label>
+
+            </div>
+
+
+            <div class="agenda-panel-acciones">
+
+              <button
+                v-if="
+                  citaEnEdicion &&
+                  citaEnEdicion.estado !== 'cancelada' &&
+                  citaEnEdicion.estado !== 'completada'
+                "
+                type="button"
+                class="boton-cancelar-cita-panel"
+                @click="cancelarCitaComoDoctor(citaEnEdicion)"
+              >
+                Cancelar cita
+              </button>
+
+
+              <div class="agenda-panel-acciones-derecha">
+                <button
+                  type="button"
+                  class="boton-cerrar-detalle-agenda"
+                  @click="cancelarFormularioCita"
+                >
+                  Cerrar
+                </button>
+
+                <button
+                  type="button"
+                  class="boton-guardar-cita-panel"
+                  :disabled="guardandoCita"
+                  @click="guardarNuevaCita"
+                >
+                  {{
+                    guardandoCita
+                      ? 'Guardando...'
+                      : citaEnEdicion?.estado === 'reagenda_solicitada'
+                        ? 'Enviar nueva fecha'
+                        : citaEnEdicion
+                          ? 'Guardar cambios'
+                          : 'Crear cita'
+                  }}
+                </button>
+              </div>
+
+            </div>
+
+          </aside>
 
         </section>
 
       </template>
-
 
       <!-- ==================================================
            MI CUENTA DEL DOCTOR
@@ -1151,7 +4387,6 @@ onUnmounted(() => {
 
         </header>
 
-
         <section
           v-if="cargandoCuenta"
           class="estado-vacio-doctor"
@@ -1162,7 +4397,6 @@ onUnmounted(() => {
             </h2>
           </div>
         </section>
-
 
         <template v-else>
 
@@ -1192,7 +4426,6 @@ onUnmounted(() => {
                   </p>
                 </div>
 
-
                 <button
                   type="button"
                   class="boton-editar-doctor"
@@ -1202,7 +4435,6 @@ onUnmounted(() => {
                 </button>
 
               </div>
-
 
               <div class="rejilla-datos-doctor">
 
@@ -1216,7 +4448,6 @@ onUnmounted(() => {
                   </strong>
                 </div>
 
-
                 <div class="dato-doctor">
                   <span>
                     Profesión registrada
@@ -1227,7 +4458,6 @@ onUnmounted(() => {
                   </strong>
                 </div>
 
-
                 <div class="dato-doctor">
                   <span>
                     Especialidad / área de atención
@@ -1237,7 +4467,6 @@ onUnmounted(() => {
                     {{ especialidadProfesional }}
                   </strong>
                 </div>
-
 
                 <div class="dato-doctor">
                   <span>
@@ -1252,7 +4481,6 @@ onUnmounted(() => {
               </div>
 
             </article>
-
 
             <article class="tarjeta-formacion">
 
@@ -1273,7 +4501,6 @@ onUnmounted(() => {
                   </p>
                 </div>
 
-
                 <button
                   v-if="!mostrarFormularioFormacion"
                   type="button"
@@ -1284,7 +4511,6 @@ onUnmounted(() => {
                 </button>
 
               </div>
-
 
               <div
                 v-if="
@@ -1325,16 +4551,13 @@ onUnmounted(() => {
 
                     </div>
 
-
                     <h3>
                       {{ formacion.nombre }}
                     </h3>
 
-
                     <p>
                       {{ formacion.institucion }}
                     </p>
-
 
                     <div class="meta-formacion">
 
@@ -1355,7 +4578,6 @@ onUnmounted(() => {
 
                   </div>
 
-
                   <button
                     type="button"
                     class="boton-eliminar-formacion"
@@ -1370,7 +4592,6 @@ onUnmounted(() => {
 
               </div>
 
-
               <div
                 v-else-if="
                   !mostrarFormularioFormacion
@@ -1382,7 +4603,6 @@ onUnmounted(() => {
                   adicional.
                 </p>
               </div>
-
 
               <form
                 v-if="mostrarFormularioFormacion"
@@ -1415,7 +4635,6 @@ onUnmounted(() => {
 
                   </div>
 
-
                   <div class="grupo-campo-doctor">
 
                     <label for="nombreFormacion">
@@ -1441,7 +4660,6 @@ onUnmounted(() => {
 
                   </div>
 
-
                   <div class="grupo-campo-doctor">
 
                     <label for="institucionFormacion">
@@ -1466,7 +4684,6 @@ onUnmounted(() => {
                     </small>
 
                   </div>
-
 
                   <div class="grupo-campo-doctor">
 
@@ -1497,7 +4714,6 @@ onUnmounted(() => {
 
                 </div>
 
-
                 <div class="bloque-cedula-formacion">
 
                   <div class="encabezado-cedula-formacion">
@@ -1512,7 +4728,6 @@ onUnmounted(() => {
                         también podemos verificarla.
                       </span>
                     </div>
-
 
                     <div class="opciones-consultorio">
 
@@ -1543,7 +4758,6 @@ onUnmounted(() => {
                     </div>
 
                   </div>
-
 
                   <div
                     v-if="
@@ -1582,7 +4796,6 @@ onUnmounted(() => {
 
                     </div>
 
-
                     <button
                       type="button"
                       class="boton-verificar-formacion"
@@ -1603,7 +4816,6 @@ onUnmounted(() => {
 
                   </div>
 
-
                   <div
                     v-if="
                       estadoCedulaFormacion !== 'sin-verificar'
@@ -1623,7 +4835,6 @@ onUnmounted(() => {
 
                 </div>
 
-
                 <div class="acciones-formacion">
 
                   <button
@@ -1634,7 +4845,6 @@ onUnmounted(() => {
                   >
                     Cancelar
                   </button>
-
 
                   <button
                     type="submit"
@@ -1654,7 +4864,6 @@ onUnmounted(() => {
 
             </article>
 
-
             <article class="tarjeta-consultorio">
 
               <div class="cabecera-consultorio">
@@ -1668,7 +4877,6 @@ onUnmounted(() => {
                     Datos de atención
                   </h2>
                 </div>
-
 
                 <span
                   class="estado-consultorio"
@@ -1686,7 +4894,6 @@ onUnmounted(() => {
 
               </div>
 
-
               <template
                 v-if="datosDoctor.tieneConsultorio"
               >
@@ -1703,7 +4910,6 @@ onUnmounted(() => {
                     </strong>
                   </div>
 
-
                   <div class="dato-doctor">
                     <span>
                       Horario de atención
@@ -1713,7 +4919,6 @@ onUnmounted(() => {
                       {{ horarioConsultorio }}
                     </strong>
                   </div>
-
 
                   <div class="dato-doctor">
                     <span>
@@ -1728,7 +4933,6 @@ onUnmounted(() => {
                 </div>
 
               </template>
-
 
               <div
                 v-else
@@ -1750,14 +4954,12 @@ onUnmounted(() => {
 
             </article>
 
-
             <p
               v-if="mensajeCuenta"
               class="mensaje-cuenta correcto"
             >
               {{ mensajeCuenta }}
             </p>
-
 
             <p
               v-if="mensajeErrorCuenta"
@@ -1767,7 +4969,6 @@ onUnmounted(() => {
             </p>
 
           </section>
-
 
           <!-- ================================================
                MODO EDICIÓN
@@ -1796,7 +4997,6 @@ onUnmounted(() => {
                   como profesional dentro de la plataforma.
                 </p>
               </div>
-
 
               <div class="rejilla-formulario-doctor">
 
@@ -1828,7 +5028,6 @@ onUnmounted(() => {
 
                 </div>
 
-
                 <div class="grupo-campo-doctor">
 
                   <label for="especialidadDoctor">
@@ -1855,7 +5054,6 @@ onUnmounted(() => {
                   </small>
 
                 </div>
-
 
                 <div class="grupo-campo-doctor">
 
@@ -1889,7 +5087,6 @@ onUnmounted(() => {
 
             </article>
 
-
             <article class="tarjeta-formulario-doctor">
 
               <div class="cabecera-formulario-doctor">
@@ -1906,7 +5103,6 @@ onUnmounted(() => {
 
               </div>
 
-
               <div class="selector-consultorio">
 
                 <div>
@@ -1919,7 +5115,6 @@ onUnmounted(() => {
                     si actualmente atiendes en uno.
                   </span>
                 </div>
-
 
                 <div class="opciones-consultorio">
 
@@ -1937,7 +5132,6 @@ onUnmounted(() => {
                   >
                     Sí
                   </button>
-
 
                   <button
                     type="button"
@@ -1957,7 +5151,6 @@ onUnmounted(() => {
                 </div>
 
               </div>
-
 
               <div
                 v-if="
@@ -1993,7 +5186,6 @@ onUnmounted(() => {
 
                 </div>
 
-
                 <div class="grupo-campo-doctor">
 
                   <label for="horarioConsultorio">
@@ -2021,7 +5213,6 @@ onUnmounted(() => {
                   </small>
 
                 </div>
-
 
                 <div class="grupo-campo-doctor">
 
@@ -2053,14 +5244,12 @@ onUnmounted(() => {
 
             </article>
 
-
             <p
               v-if="mensajeErrorCuenta"
               class="mensaje-cuenta error"
             >
               {{ mensajeErrorCuenta }}
             </p>
-
 
             <div class="acciones-formulario-doctor">
 
@@ -2072,7 +5261,6 @@ onUnmounted(() => {
               >
                 Cancelar
               </button>
-
 
               <button
                 type="submit"
@@ -2101,5 +5289,4 @@ onUnmounted(() => {
 
 <style
   scoped
-  src="../assets/styles/panelDoctor.css"
-></style>
+  src="../assets/styles/panelDoctor.css"></style>

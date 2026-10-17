@@ -1190,12 +1190,16 @@ async function getLatestPatientHealthData(
 
 
     if (snapshot.empty) {
-
       return res.json({
 
         success: true,
 
         pacienteUid,
+
+        // Datos generales del paciente obtenidos desde
+        // usuarios/{pacienteUid}
+        paciente:
+          acceso.paciente,
 
         data: null,
 
@@ -1215,6 +1219,12 @@ async function getLatestPatientHealthData(
 
       pacienteUid,
 
+      // Datos generales del paciente obtenidos desde
+      // usuarios/{pacienteUid}
+      paciente:
+        acceso.paciente,
+
+      // Último registro de Health Connect
       data: {
 
         id:

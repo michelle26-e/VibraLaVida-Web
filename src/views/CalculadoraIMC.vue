@@ -8,10 +8,10 @@ import BotonVolver from '../components/BotonVolver.vue'
 
 // Guardamos los datos que ingresa el usuario (edad, peso, altura, género)
 const formulario = ref({
-  edad: 18,
+  edad: '',
   genero: 'hombre',
-  altura: 170,
-  peso: 60,
+  altura: '',
+  peso: '',
 })
 
 const errores = ref({})
@@ -182,7 +182,7 @@ const calcularIMC = async () => {
                   id="edad"
                   v-model="formulario.edad"
                   type="number"
-                  placeholder="Edad"
+                  placeholder="Ej. 18"
                   @input="ocultarResultado"
                 />
                 <span>años</span>
@@ -222,7 +222,7 @@ const calcularIMC = async () => {
                 id="altura"
                 v-model="formulario.altura"
                 type="number"
-                placeholder="Altura"
+                placeholder="Ej. 170"
                 @input="ocultarResultado"
               />
               <span>cm</span>
@@ -239,7 +239,7 @@ const calcularIMC = async () => {
                 id="peso"
                 v-model="formulario.peso"
                 type="number"
-                placeholder="Peso"
+                placeholder="Ej. 60"
                 @input="ocultarResultado"
               />
               <span>kg</span>

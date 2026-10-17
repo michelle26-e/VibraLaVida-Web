@@ -251,17 +251,25 @@ const iniciarSesion = async () => {
 
   } catch (error) {
 
-    console.error(
-      'Error al iniciar sesión:',
-      error.code,
-      error.message
-    )
-
+    // Mostramos el error real en la consola para identificar
+    // rápidamente si viene de Authentication o Firestore.
+    console.error('====================================')
+    console.error('ERROR COMPLETO AL INICIAR SESIÓN')
+    console.error('Código:', error?.code)
+    console.error('Mensaje:', error?.message)
+    console.error('Error completo:', error)
+    console.error('====================================')
 
     tipoMensaje.value = 'error'
 
 
-    if (error.code === 'auth/invalid-credential') {
+    // No diferenciamos públicamente si el correo existe o
+    // si la contraseña es incorrecta, para no exponer cuentas.
+    if (
+      error?.code === 'auth/invalid-credential' ||
+      error?.code === 'auth/user-not-found' ||
+      error?.code === 'auth/wrong-password'
+    ) {
 
       mensaje.value =
         'Correo o contraseña incorrectos.'
@@ -270,28 +278,52 @@ const iniciarSesion = async () => {
     }
 
 
-    if (error.code === 'auth/user-not-found') {
+    if (error?.code === 'auth/user-disabled') {
 
       mensaje.value =
-        'No existe una cuenta con este correo.'
+        'No fue posible acceder a esta cuenta.'
 
       return
     }
 
 
-    if (error.code === 'auth/wrong-password') {
-
-      mensaje.value =
-        'Contraseña incorrecta.'
-
-      return
-    }
-
-
-    if (error.code === 'auth/too-many-requests') {
+    if (error?.code === 'auth/too-many-requests') {
 
       mensaje.value =
         'Demasiados intentos. Intenta nuevamente más tarde.'
+
+      return
+    }
+
+
+    if (error?.code === 'auth/network-request-failed') {
+
+      mensaje.value =
+        'No fue posible conectarse. Verifica tu conexión a internet.'
+
+      return
+    }
+
+
+    if (
+      error?.code === 'permission-denied' ||
+      error?.code === 'firestore/permission-denied'
+    ) {
+
+      mensaje.value =
+        'No fue posible consultar la información de la cuenta.'
+
+      return
+    }
+
+
+    if (
+      error?.code === 'auth/invalid-api-key' ||
+      error?.code === 'auth/app-not-authorized'
+    ) {
+
+      mensaje.value =
+        'Existe un problema con la configuración de Firebase.'
 
       return
     }

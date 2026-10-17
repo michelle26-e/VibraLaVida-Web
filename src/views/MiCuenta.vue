@@ -9,7 +9,7 @@ import {
   EmailAuthProvider,
   reauthenticateWithCredential,
 } from 'firebase/auth'
-import { doc, updateDoc, deleteDoc } from 'firebase/firestore'
+import { doc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore'
 
 import { auth, db } from '../firebase/firebaseConfig'
 import { cerrarSesionUsuario, obtenerDatosUsuario } from '../services/authService'
@@ -37,6 +37,7 @@ const editandoPerfil = ref(false)
 const formularioPerfil = ref({
   nombreCompleto: '',
   correo: '',
+  telefono: '',
 })
 
 let detenerObservador = null
@@ -76,6 +77,15 @@ const correoUsuario = computed(() => {
     datosUsuario.value?.correo ||
     usuarioActual.value?.email ||
     'Sin correo registrado'
+  )
+})
+
+// Número de celular privado del paciente.
+// Se guarda únicamente en usuarios/{uid}.
+const telefonoUsuario = computed(() => {
+  return (
+    datosUsuario.value?.telefono ||
+    'Sin número registrado'
   )
 })
 
@@ -143,6 +153,32 @@ const cargarResultadosUsuario = async () => {
 }
 
 // --------------------------------------------------
+// NORMALIZAR NOMBRE PARA EL DIRECTORIO
+// --------------------------------------------------
+// Ejemplo:
+// "José Pérez" -> "jose perez"
+//
+// Este valor se usa únicamente para facilitar la búsqueda
+// del paciente desde el panel profesional.
+// --------------------------------------------------
+
+const normalizarNombreBusqueda = (texto = '') => {
+  return texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Deja únicamente los números del celular.
+// Ejemplo: "983 123 4567" -> "9831234567"
+const limpiarTelefono = (telefono = '') => {
+  return telefono.replace(/\D/g, '')
+}
+
+
+// --------------------------------------------------
 // EDICIÓN DEL PERFIL
 // --------------------------------------------------
 
@@ -152,6 +188,9 @@ const activarEdicionPerfil = () => {
 
   formularioPerfil.value.correo =
     correoUsuario.value
+
+  formularioPerfil.value.telefono =
+    datosUsuario.value?.telefono || ''
 
   editandoPerfil.value = true
 }
@@ -170,39 +209,156 @@ const guardarPerfil = async () => {
     formularioPerfil.value.nombreCompleto.trim()
 
   const correo =
-    formularioPerfil.value.correo.trim()
+    formularioPerfil.value.correo
+      .trim()
+      .toLowerCase()
+
+  const telefono =
+    limpiarTelefono(
+      formularioPerfil.value.telefono
+    )
 
   if (!nombreCompleto || !correo) {
     alert('Completa el nombre y el correo.')
     return
   }
 
-  try {
-    // Actualizamos Firestore usando el nuevo campo nombreCompleto
-    await updateDoc(doc(db, 'usuarios', usuario.uid), {
-      nombreCompleto,
-      correo,
-    })
+  // El teléfono puede estar vacío por ahora.
+  // Si el paciente captura uno, debe tener exactamente 10 dígitos.
+  if (telefono && telefono.length !== 10) {
+    alert(
+      'El número de celular debe contener 10 dígitos.'
+    )
+    return
+  }
 
-    // Si cambió el correo también se actualiza Firebase Authentication
+  try {
+    // ------------------------------------------------
+    // 1. ACTUALIZAR CORREO EN AUTHENTICATION
+    // ------------------------------------------------
+    // Si el correo cambió, Firebase puede pedir que el
+    // usuario haya iniciado sesión recientemente.
+    // Lo hacemos primero para no dejar Firestore con un
+    // correo diferente si Authentication rechaza el cambio.
+    // ------------------------------------------------
+
     if (correo !== usuario.email) {
-      await updateEmail(usuario, correo)
+      await updateEmail(
+        usuario,
+        correo
+      )
     }
 
-    // Actualizamos los datos locales para reflejar el cambio inmediatamente
+
+    // ------------------------------------------------
+    // 2. ACTUALIZAR PERFIL PRINCIPAL
+    // ------------------------------------------------
+
+    // Si el número cambió, cualquier verificación anterior
+    // deja de ser válida hasta verificar nuevamente por SMS.
+    const telefonoAnterior =
+      limpiarTelefono(
+        datosUsuario.value?.telefono || ''
+      )
+
+    const telefonoCambio =
+      telefono !== telefonoAnterior
+
+    await updateDoc(
+      doc(
+        db,
+        'usuarios',
+        usuario.uid
+      ),
+      {
+        nombreCompleto,
+        correo,
+        telefono,
+        telefonoVerificado:
+          telefonoCambio
+            ? false
+            : Boolean(
+                datosUsuario.value
+                  ?.telefonoVerificado
+              ),
+      }
+    )
+
+
+    // ------------------------------------------------
+    // 3. SINCRONIZAR DIRECTORIO DEL PACIENTE
+    // ------------------------------------------------
+    // Solo las cuentas con rol "usuario" forman parte
+    // de directorio_pacientes.
+    //
+    // Gracias a esto, si Michelle cambia su nombre,
+    // Laura podrá buscarla inmediatamente por el nombre
+    // nuevo sin tocar Firebase manualmente.
+    // ------------------------------------------------
+
+    if (
+      datosUsuario.value?.rol ===
+      'usuario'
+    ) {
+      await setDoc(
+        doc(
+          db,
+          'directorio_pacientes',
+          usuario.uid
+        ),
+        {
+          uid:
+            usuario.uid,
+
+          nombreCompleto,
+
+          nombreBusqueda:
+            normalizarNombreBusqueda(
+              nombreCompleto
+            ),
+        },
+        {
+          merge: true,
+        }
+      )
+    }
+
+
+    // ------------------------------------------------
+    // 4. ACTUALIZAR LA PANTALLA
+    // ------------------------------------------------
+
     datosUsuario.value = {
       ...datosUsuario.value,
       nombreCompleto,
       correo,
+      telefono,
+      telefonoVerificado:
+        telefonoCambio
+          ? false
+          : Boolean(
+              datosUsuario.value
+                ?.telefonoVerificado
+            ),
     }
 
     editandoPerfil.value = false
 
-    alert('Perfil actualizado correctamente.')
-  } catch (error) {
-    console.error('Error al actualizar perfil:', error)
+    alert(
+      'Perfil actualizado correctamente.'
+    )
 
-    if (error.code === 'auth/requires-recent-login') {
+  } catch (error) {
+
+    console.error(
+      'Error al actualizar perfil:',
+      error
+    )
+
+    if (
+      error.code ===
+      'auth/requires-recent-login'
+    ) {
       alert(
         'Por seguridad, vuelve a iniciar sesión para cambiar el correo.'
       )
@@ -214,6 +370,7 @@ const guardarPerfil = async () => {
     )
   }
 }
+
 
 // --------------------------------------------------
 // ELIMINAR PERFIL
@@ -247,9 +404,29 @@ const eliminarPerfil = async () => {
       credencial
     )
 
-    // Elimina primero los datos del perfil en Firestore
+    // Si es paciente, eliminamos también su entrada
+    // del directorio para que ya no aparezca en búsquedas
+    // de profesionales.
+    if (
+      datosUsuario.value?.rol ===
+      'usuario'
+    ) {
+      await deleteDoc(
+        doc(
+          db,
+          'directorio_pacientes',
+          usuario.uid
+        )
+      )
+    }
+
+    // Elimina el perfil principal en Firestore.
     await deleteDoc(
-      doc(db, 'usuarios', usuario.uid)
+      doc(
+        db,
+        'usuarios',
+        usuario.uid
+      )
     )
 
     // Después elimina la cuenta de Authentication
@@ -404,6 +581,19 @@ onUnmounted(() => {
                 {{ correoUsuario }}
               </strong>
             </div>
+
+            <div
+              v-if="
+                datosUsuario?.rol === 'usuario'
+              "
+              class="dato-perfil"
+            >
+              <span>Número de celular</span>
+
+              <strong>
+                {{ telefonoUsuario }}
+              </strong>
+            </div>
             
             <button
               class="boton-secundario"
@@ -444,6 +634,30 @@ onUnmounted(() => {
               type="email"
               required
             />
+
+            <template
+              v-if="
+                datosUsuario?.rol === 'usuario'
+              "
+            >
+              <label>
+                Número de celular
+              </label>
+
+              <input
+                v-model="formularioPerfil.telefono"
+                type="tel"
+                inputmode="numeric"
+                maxlength="14"
+                placeholder="Ej. 9831234567"
+              />
+
+              <small>
+                Ingresa 10 dígitos. Este número será privado
+                y más adelante se utilizará para verificar
+                solicitudes de seguimiento por SMS.
+              </small>
+            </template>
 
             <button
               class="boton-secundario"
