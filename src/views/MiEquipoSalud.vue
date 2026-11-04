@@ -2581,7 +2581,7 @@ onUnmounted(() => {
 
 <style
   scoped
-  src="../assets/styles/miEquipoSalud.css"
+  src="../assets/styles/MiEquipoSalud.css"
 ></style>
 
 
