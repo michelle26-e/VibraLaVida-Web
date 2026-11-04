@@ -1704,3 +1704,332 @@
     border-radius: 22px;
   }
 }
+
+/* ==========================================================
+   PRIVACIDAD Y LEGAL - HOME WEB
+   ========================================================== */
+
+.pie-legal-home {
+  margin-left: 344px;
+  padding: 20px 4vw 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  color: #718499;
+  font-size: 12px;
+}
+
+.pie-legal-home button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0f6e83;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pie-legal-home button:hover {
+  text-decoration: underline;
+}
+
+.fondo-consentimiento-home,
+.fondo-documento-home {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 35, 48, 0.62);
+  backdrop-filter: blur(5px);
+}
+
+.modal-consentimiento-home {
+  width: min(840px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 34px 40px 38px;
+  border: 1px solid #dbe7ec;
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow: 0 28px 70px rgba(8, 42, 57, 0.22);
+}
+
+.icono-privacidad-home {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  background: #e8f8f2;
+  font-size: 25px;
+}
+
+.etiqueta-legal-home {
+  display: inline-flex;
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: #08796f;
+  background: #e9f8f4;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.modal-consentimiento-home h2 {
+  margin: 14px 0 9px;
+  color: #173b57;
+  font-size: 28px;
+}
+
+.introduccion-consentimiento-home {
+  margin: 0;
+  color: #62788b;
+  line-height: 1.65;
+}
+
+.documentos-consentimiento-home {
+  display: grid;
+  gap: 11px;
+  margin-top: 26px;
+}
+
+.documentos-consentimiento-home button {
+  min-height: 88px;
+  padding: 18px 22px;
+  border: 1px solid #dbe7ec;
+  border-radius: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: #fbfdfd;
+  color: #174363;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.documentos-consentimiento-home button:hover {
+  border-color: #9fd6d1;
+  background: #f5fbfa;
+}
+
+.documentos-consentimiento-home strong,
+.documentos-consentimiento-home span {
+  display: block;
+}
+
+.documentos-consentimiento-home strong {
+  font-size: 15px;
+}
+
+.documentos-consentimiento-home div span {
+  margin-top: 5px;
+  color: #8091a2;
+  font-size: 12px;
+}
+
+.checks-consentimiento-home {
+  display: grid;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.checks-consentimiento-home label {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 13px;
+  align-items: flex-start;
+  padding: 16px 18px;
+  border: 1px solid #e0e8ed;
+  border-radius: 15px;
+  color: #294c69;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.checks-consentimiento-home input {
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: #0f9488;
+}
+
+.nota-proteccion-home {
+  margin: 22px 0 0;
+  padding: 14px 17px;
+  border-radius: 14px;
+  color: #1d5875;
+  background: #eaf7fd;
+  font-size: 12px;
+}
+
+.mensaje-legal-home-error {
+  margin: 14px 0 0;
+  color: #b42335;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.acciones-consentimiento-home {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.36fr) minmax(240px, 1fr);
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.boton-no-acepto-home,
+.boton-aceptar-home {
+  min-height: 54px;
+  padding: 0 20px;
+  border-radius: 15px;
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.boton-no-acepto-home {
+  border: 1px solid #e2aeb5;
+  color: #a72c3a;
+  background: #fffafa;
+}
+
+.boton-no-acepto-home:hover:not(:disabled) {
+  background: #fff0f2;
+}
+
+.boton-aceptar-home {
+  border: 0;
+  color: #ffffff;
+  background: #0f9488;
+}
+
+.boton-aceptar-home:hover:not(:disabled) {
+  background: #0b7e74;
+}
+
+.boton-no-acepto-home:disabled,
+.boton-aceptar-home:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.modal-documento-home {
+  width: min(980px, 100%);
+  max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 28px 70px rgba(8, 42, 57, 0.24);
+}
+
+.cabecera-documento-home {
+  padding: 20px 24px;
+  border-bottom: 1px solid #e8eef2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.cabecera-documento-home span {
+  color: #0f9488;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.cabecera-documento-home h2 {
+  margin: 5px 0 0;
+  color: #173b57;
+}
+
+.cabecera-documento-home > button {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f7;
+  color: #52697c;
+  font-size: 25px;
+  cursor: pointer;
+}
+
+.contenido-documento-home {
+  overflow-y: auto;
+  padding: 24px 28px;
+}
+
+.contenido-documento-home pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #405c72;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.pie-documento-home {
+  padding: 15px 22px;
+  border-top: 1px solid #e8eef2;
+  display: flex;
+  justify-content: flex-end;
+  background: #fbfcfd;
+}
+
+.pie-documento-home button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 11px;
+  color: #ffffff;
+  background: #0f6e83;
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+@media (max-width: 1024px) {
+  .pie-legal-home {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .fondo-consentimiento-home,
+  .fondo-documento-home {
+    padding: 10px;
+  }
+
+  .modal-consentimiento-home {
+    max-height: calc(100vh - 20px);
+    padding: 24px 18px 26px;
+    border-radius: 20px;
+  }
+
+  .modal-consentimiento-home h2 {
+    font-size: 23px;
+  }
+
+  .acciones-consentimiento-home {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-documento-home {
+    max-height: calc(100vh - 20px);
+    border-radius: 18px;
+  }
+
+  .contenido-documento-home {
+    padding: 18px;
+  }
+}
