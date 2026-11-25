@@ -4,7 +4,7 @@
 
 import {
   createRouter,
-  createWebHistory,
+  createWebHashHistory,
 } from 'vue-router'
 
 
@@ -44,7 +44,7 @@ import MiEquipoSalud from '../views/MiEquipoSalud.vue'
 const router = createRouter({
 
   history:
-    createWebHistory(
+    createWebHashHistory(
       import.meta.env.BASE_URL
     ),
 
