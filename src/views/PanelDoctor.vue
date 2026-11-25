@@ -4752,22 +4752,33 @@ onUnmounted(() => {
             </button>
 
 
-            <div class="agenda-vistas-selector">
+            <div class="agenda-vistas-selector" role="tablist" aria-label="Vista de citas">
               <button
                 type="button"
+                class="agenda-vista-boton"
                 :class="{ activo: vistaCitas === 'agenda' }"
+                :aria-selected="vistaCitas === 'agenda'"
+                role="tab"
                 @click="mostrarAgendaCitas"
               >
-                Agenda
+                <CalendarDays :size="15" :stroke-width="2.2" />
+                <span class="agenda-vista-texto">Agenda</span>
               </button>
 
               <button
                 type="button"
+                class="agenda-vista-boton"
                 :class="{ activo: vistaCitas === 'historial' }"
+                :aria-selected="vistaCitas === 'historial'"
+                role="tab"
                 @click="mostrarHistorialCitas"
               >
-                Historial
-                <span v-if="citasHistorialDoctor.length > 0">
+                <FileText :size="15" :stroke-width="2.2" />
+                <span class="agenda-vista-texto">Historial</span>
+                <span
+                  v-if="citasHistorialDoctor.length > 0"
+                  class="agenda-vista-contador"
+                >
                   {{ citasHistorialDoctor.length }}
                 </span>
               </button>
