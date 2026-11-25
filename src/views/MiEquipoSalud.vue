@@ -32,8 +32,6 @@ import {
 
 import {
   collection,
-  doc,
-  getDoc,
   getDocs,
   query,
   where,
@@ -45,10 +43,10 @@ import {
 } from '../firebase/firebaseConfig'
 
 import {
-  cancelarVerificacionTelefono,
-  enviarCodigoTelefono,
-  verificarCodigoTelefono,
-} from '../services/verificacionTelefonoService'
+  autorizarSeguimientoConCodigo,
+  obtenerCodigoSeguimiento,
+  rechazarSolicitudSeguimiento,
+} from '../services/seguimientoPacienteService'
 
 import {
   cancelarCitaPaciente,
@@ -80,227 +78,193 @@ const solicitudesPendientes = ref([])
 
 const mensajeError = ref('')
 
-// Datos privados del paciente.
-// El teléfono se obtiene de usuarios/{uid}, nunca del directorio público.
-const datosPaciente = ref(null)
+// Estado del proceso OTP interno.
+// NO utiliza teléfono, SMS, reCAPTCHA ni Firebase Phone Auth.
+const solicitudOtpId = ref('')
+const codigoOtpIngresado = ref('')
+const codigoOtpMostrado = ref('')
+const codigoOtpExpiraEn = ref('')
+const obteniendoCodigoOtp = ref(false)
+const autorizandoSeguimiento = ref(false)
+const rechazandoSeguimiento = ref(false)
 
-// Estado del proceso de verificación por SMS.
-const solicitudVerificacionId = ref('')
-const codigoSms = ref('')
-const codigoEnviado = ref(false)
-const enviandoCodigo = ref(false)
-const verificandoCodigo = ref(false)
-const solicitudTelefonoVerificadaId = ref('')
-
-const mensajeVerificacionTelefono = ref('')
-const errorVerificacionTelefono = ref('')
+const mensajeOtp = ref('')
+const errorOtp = ref('')
 
 let detenerObservador = null
 
 
 // ----------------------------------------------------------
-// CARGAR DATOS PRIVADOS DEL PACIENTE
+// OBTENER CÓDIGO OTP DESDE RENDER
 // ----------------------------------------------------------
-// Aquí obtenemos el teléfono guardado en usuarios/{uid}.
-// Nunca se lee desde directorio_pacientes.
-// ----------------------------------------------------------
-
-const cargarDatosPaciente = async (
-  pacienteUid
-) => {
-  const referencia =
-    doc(
-      db,
-      'usuarios',
-      pacienteUid
-    )
-
-  const documento =
-    await getDoc(
-      referencia
-    )
-
-  datosPaciente.value =
-    documento.exists()
-      ? documento.data()
-      : null
-}
-
-
-// ----------------------------------------------------------
-// TELÉFONO DEL PACIENTE
+// El código se entrega únicamente al paciente autenticado
+// dueño de la solicitud.
 // ----------------------------------------------------------
 
-const telefonoPaciente = computed(
-  () =>
-    datosPaciente.value?.telefono ||
-    ''
-)
-
-
-const telefonoPacienteEnmascarado = computed(
-  () => {
-    const telefono =
-      String(
-        telefonoPaciente.value
-      )
-        .replace(/\D/g, '')
-
-    if (
-      telefono.length !== 10
-    ) {
-      return 'No registrado'
-    }
-
-    return `••• ••• ${telefono.slice(-4)}`
-  }
-)
-
-
-// ----------------------------------------------------------
-// SOLICITAR CÓDIGO SMS
-// ----------------------------------------------------------
-// Este paso SOLO verifica el teléfono.
-// Todavía NO cambia seguimiento_profesional a "activo".
-// ----------------------------------------------------------
-
-const solicitarCodigoSms = async (
+const solicitarCodigoOtp = async (
   solicitud
 ) => {
-  mensajeVerificacionTelefono.value = ''
-  errorVerificacionTelefono.value = ''
-
-  if (
-    !telefonoPaciente.value
-  ) {
-    errorVerificacionTelefono.value =
-      'Primero registra un número de celular desde Mi cuenta.'
-
-    return
-  }
-
-  solicitudVerificacionId.value =
+  solicitudOtpId.value =
     solicitud.vinculoId
 
-  solicitudTelefonoVerificadaId.value =
-    ''
-
-  codigoSms.value = ''
-  codigoEnviado.value = false
-  enviandoCodigo.value = true
-
-  try {
-    await enviarCodigoTelefono({
-      telefono:
-        telefonoPaciente.value,
-
-      botonId:
-        `boton-sms-${solicitud.vinculoId}`,
-    })
-
-    codigoEnviado.value = true
-
-    mensajeVerificacionTelefono.value =
-      `Código enviado al número terminado en ${String(telefonoPaciente.value).slice(-4)}.`
-
-  } catch (error) {
-    console.error(
-      'Error al solicitar código SMS:',
-      error
-    )
-
-    errorVerificacionTelefono.value =
-      error.message ||
-      'No fue posible enviar el código de verificación.'
-
-  } finally {
-    enviandoCodigo.value = false
-  }
-}
-
-
-// ----------------------------------------------------------
-// VERIFICAR CÓDIGO SMS
-// ----------------------------------------------------------
-// Cuando Firebase confirme el código:
-// - el teléfono queda vinculado/reautenticado en Firebase Auth;
-// - conservamos el mismo UID;
-// - el seguimiento TODAVÍA sigue pendiente.
-//
-// En el siguiente paso la API Express será la responsable
-// de activar el seguimiento de forma segura.
-// ----------------------------------------------------------
-
-const confirmarCodigoSms = async (
-  solicitud
-) => {
-  if (
-    solicitudVerificacionId.value !==
-    solicitud.vinculoId
-  ) {
-    return
-  }
-
-  mensajeVerificacionTelefono.value = ''
-  errorVerificacionTelefono.value = ''
-
-  verificandoCodigo.value = true
+  codigoOtpIngresado.value = ''
+  codigoOtpMostrado.value = ''
+  codigoOtpExpiraEn.value = ''
+  mensajeOtp.value = ''
+  errorOtp.value = ''
+  obteniendoCodigoOtp.value = true
 
   try {
     const resultado =
-      await verificarCodigoTelefono(
-        codigoSms.value
+      await obtenerCodigoSeguimiento(
+        solicitud.vinculoId
       )
 
-    if (
-      resultado.uid !==
-      usuarioActual.value?.uid
-    ) {
-      throw new Error(
-        'La verificación no corresponde a tu cuenta.'
-      )
-    }
+    codigoOtpMostrado.value =
+      String(resultado?.codigo || '')
 
-    solicitudTelefonoVerificadaId.value =
-      solicitud.vinculoId
+    codigoOtpExpiraEn.value =
+      resultado?.expiraEn || ''
 
-    codigoEnviado.value = false
-    codigoSms.value = ''
-
-    mensajeVerificacionTelefono.value =
-      'Teléfono verificado correctamente. La solicitud todavía no ha sido activada.'
+    mensajeOtp.value =
+      `Código generado. Escríbelo abajo para autorizar el seguimiento. Tiene una vigencia de ${resultado?.minutosValidez || 10} minutos.`
 
   } catch (error) {
     console.error(
-      'Error al verificar código SMS:',
+      'Error al obtener código OTP:',
       error
     )
 
-    errorVerificacionTelefono.value =
+    errorOtp.value =
       error.message ||
-      'No fue posible verificar el código.'
-
+      'No fue posible obtener el código de autorización.'
   } finally {
-    verificandoCodigo.value = false
+    obteniendoCodigoOtp.value = false
   }
 }
 
 
 // ----------------------------------------------------------
-// CANCELAR PROCESO DE VERIFICACIÓN
+// AUTORIZAR SEGUIMIENTO CON OTP
 // ----------------------------------------------------------
 
-const cancelarCodigoSms = () => {
-  cancelarVerificacionTelefono()
+const confirmarCodigoOtp = async (
+  solicitud
+) => {
+  if (
+    solicitudOtpId.value !==
+    solicitud.vinculoId
+  ) {
+    return
+  }
 
-  solicitudVerificacionId.value = ''
-  codigoSms.value = ''
-  codigoEnviado.value = false
-  enviandoCodigo.value = false
-  verificandoCodigo.value = false
+  const codigo =
+    codigoOtpIngresado.value
+      .replace(/\D/g, '')
 
-  mensajeVerificacionTelefono.value = ''
-  errorVerificacionTelefono.value = ''
+  if (codigo.length !== 6) {
+    errorOtp.value =
+      'Escribe el código de 6 dígitos.'
+    return
+  }
+
+  mensajeOtp.value = ''
+  errorOtp.value = ''
+  autorizandoSeguimiento.value = true
+
+  try {
+    await autorizarSeguimientoConCodigo(
+      solicitud.vinculoId,
+      codigo
+    )
+
+    solicitudOtpId.value = ''
+    codigoOtpIngresado.value = ''
+    codigoOtpMostrado.value = ''
+    codigoOtpExpiraEn.value = ''
+
+    mensajeOtp.value =
+      'Seguimiento autorizado correctamente.'
+
+    if (usuarioActual.value?.uid) {
+      await cargarEquipoSalud(
+        usuarioActual.value.uid
+      )
+    }
+
+  } catch (error) {
+    console.error(
+      'Error al autorizar seguimiento:',
+      error
+    )
+
+    errorOtp.value =
+      error.message ||
+      'No fue posible autorizar el seguimiento.'
+  } finally {
+    autorizandoSeguimiento.value = false
+  }
+}
+
+
+// ----------------------------------------------------------
+// CANCELAR CAPTURA DEL CÓDIGO
+// ----------------------------------------------------------
+
+const cancelarCodigoOtp = () => {
+  solicitudOtpId.value = ''
+  codigoOtpIngresado.value = ''
+  codigoOtpMostrado.value = ''
+  codigoOtpExpiraEn.value = ''
+  mensajeOtp.value = ''
+  errorOtp.value = ''
+}
+
+
+// ----------------------------------------------------------
+// RECHAZAR SOLICITUD
+// ----------------------------------------------------------
+
+const rechazarSolicitud = async (
+  solicitud
+) => {
+  const confirmar = window.confirm(
+    `¿Deseas rechazar la solicitud de seguimiento de ${solicitud.nombreCompleto || 'este profesional'}?`
+  )
+
+  if (!confirmar) {
+    return
+  }
+
+  mensajeOtp.value = ''
+  errorOtp.value = ''
+  rechazandoSeguimiento.value = true
+
+  try {
+    await rechazarSolicitudSeguimiento(
+      solicitud.vinculoId
+    )
+
+    cancelarCodigoOtp()
+
+    if (usuarioActual.value?.uid) {
+      await cargarEquipoSalud(
+        usuarioActual.value.uid
+      )
+    }
+
+  } catch (error) {
+    console.error(
+      'Error al rechazar seguimiento:',
+      error
+    )
+
+    errorOtp.value =
+      error.message ||
+      'No fue posible rechazar la solicitud.'
+  } finally {
+    rechazandoSeguimiento.value = false
+  }
 }
 
 
@@ -1237,15 +1201,9 @@ onMounted(() => {
         usuarioActual.value =
           usuario
 
-        await Promise.all([
-          cargarDatosPaciente(
-            usuario.uid
-          ),
-
-          cargarEquipoSalud(
-            usuario.uid
-          ),
-        ])
+        await cargarEquipoSalud(
+          usuario.uid
+        )
 
         await cargarCitasPaciente()
       }
@@ -1254,8 +1212,6 @@ onMounted(() => {
 
 
 onUnmounted(() => {
-
-  cancelarVerificacionTelefono()
 
   if (detenerObservador) {
     detenerObservador()
@@ -1497,7 +1453,7 @@ onUnmounted(() => {
 
 
                 <!-- ==========================================
-                     VERIFICACIÓN POR SMS
+                     AUTORIZACIÓN CON CÓDIGO OTP INTERNO
                      ========================================== -->
 
                 <div class="verificacion-sms-solicitud">
@@ -1509,10 +1465,9 @@ onUnmounted(() => {
                       </strong>
 
                       <p>
-                        Para autorizar este seguimiento,
-                        primero verificaremos el celular registrado
-                        en tu cuenta:
-                        {{ telefonoPacienteEnmascarado }}
+                        Para autorizar este seguimiento, genera un
+                        código de un solo uso dentro de Vibra la Vida.
+                        No se enviará ningún SMS y no se utilizará tu teléfono.
                       </p>
                     </div>
                   </div>
@@ -1520,56 +1475,72 @@ onUnmounted(() => {
 
                   <button
                     v-if="
-                      solicitudVerificacionId !== solicitud.vinculoId &&
-                      solicitudTelefonoVerificadaId !== solicitud.vinculoId
+                      solicitudOtpId !== solicitud.vinculoId
                     "
-                    :id="`boton-sms-${solicitud.vinculoId}`"
                     type="button"
                     class="boton-verificar-seguimiento"
                     :disabled="
-                      enviandoCodigo ||
-                      !telefonoPaciente
+                      obteniendoCodigoOtp ||
+                      rechazandoSeguimiento
                     "
                     @click="
-                      solicitarCodigoSms(
+                      solicitarCodigoOtp(
                         solicitud
                       )
                     "
                   >
                     {{
-                      enviandoCodigo
-                        ? 'Enviando código...'
-                        : 'Verificar y autorizar'
+                      obteniendoCodigoOtp
+                        ? 'Generando código...'
+                        : 'Obtener código de autorización'
                     }}
                   </button>
 
 
                   <div
                     v-if="
-                      solicitudVerificacionId === solicitud.vinculoId &&
-                      codigoEnviado
+                      solicitudOtpId === solicitud.vinculoId
                     "
                     class="panel-codigo-sms"
                   >
 
-                    <label
-                      :for="`codigo-sms-${solicitud.vinculoId}`"
+                    <div
+                      v-if="codigoOtpMostrado"
+                      class="codigo-otp-visible"
                     >
-                      Código de verificación
+                      <span>
+                        Tu código de un solo uso
+                      </span>
+
+                      <strong>
+                        {{ codigoOtpMostrado }}
+                      </strong>
+
+                      <small>
+                        Escríbelo en el campo inferior para confirmar.
+                      </small>
+                    </div>
+
+                    <label
+                      :for="`codigo-otp-${solicitud.vinculoId}`"
+                    >
+                      Código de autorización
                     </label>
 
-                    <p>
-                      Escribe el código de 6 dígitos.
-                    </p>
-
                     <input
-                      :id="`codigo-sms-${solicitud.vinculoId}`"
-                      v-model="codigoSms"
+                      :id="`codigo-otp-${solicitud.vinculoId}`"
+                      v-model="codigoOtpIngresado"
                       type="text"
                       inputmode="numeric"
                       autocomplete="one-time-code"
                       maxlength="6"
                       placeholder="000000"
+                      @input="
+                        codigoOtpIngresado =
+                          codigoOtpIngresado
+                            .replace(/\D/g, '')
+                            .slice(0, 6)
+                      "
                     />
 
                     <div class="acciones-codigo-sms">
@@ -1577,8 +1548,8 @@ onUnmounted(() => {
                       <button
                         type="button"
                         class="boton-cancelar-sms"
-                        :disabled="verificandoCodigo"
-                        @click="cancelarCodigoSms"
+                        :disabled="autorizandoSeguimiento"
+                        @click="cancelarCodigoOtp"
                       >
                         Cancelar
                       </button>
@@ -1587,19 +1558,19 @@ onUnmounted(() => {
                         type="button"
                         class="boton-confirmar-sms"
                         :disabled="
-                          verificandoCodigo ||
-                          codigoSms.replace(/\D/g, '').length !== 6
+                          autorizandoSeguimiento ||
+                          codigoOtpIngresado.length !== 6
                         "
                         @click="
-                          confirmarCodigoSms(
+                          confirmarCodigoOtp(
                             solicitud
                           )
                         "
                       >
                         {{
-                          verificandoCodigo
-                            ? 'Verificando...'
-                            : 'Verificar código'
+                          autorizandoSeguimiento
+                            ? 'Autorizando...'
+                            : 'Autorizar seguimiento'
                         }}
                       </button>
 
@@ -1608,47 +1579,47 @@ onUnmounted(() => {
                   </div>
 
 
-                  <div
-                    v-if="
-                      solicitudTelefonoVerificadaId === solicitud.vinculoId
-                    "
-                    class="telefono-verificado-solicitud"
-                  >
-                    Teléfono verificado correctamente.
-                    El seguimiento sigue pendiente hasta completar
-                    la autorización segura en el servidor.
-                  </div>
-
-
                   <p
                     v-if="
-                      solicitudVerificacionId === solicitud.vinculoId &&
-                      mensajeVerificacionTelefono
+                      solicitudOtpId === solicitud.vinculoId &&
+                      mensajeOtp
                     "
                     class="mensaje-verificacion-sms correcto"
                   >
-                    {{ mensajeVerificacionTelefono }}
+                    {{ mensajeOtp }}
                   </p>
 
 
                   <p
                     v-if="
-                      solicitudVerificacionId === solicitud.vinculoId &&
-                      errorVerificacionTelefono
+                      solicitudOtpId === solicitud.vinculoId &&
+                      errorOtp
                     "
                     class="mensaje-verificacion-sms error"
                   >
-                    {{ errorVerificacionTelefono }}
+                    {{ errorOtp }}
                   </p>
 
 
-                  <p
-                    v-if="!telefonoPaciente"
-                    class="mensaje-verificacion-sms error"
+                  <button
+                    type="button"
+                    class="boton-rechazar-seguimiento"
+                    :disabled="
+                      rechazandoSeguimiento ||
+                      autorizandoSeguimiento
+                    "
+                    @click="
+                      rechazarSolicitud(
+                        solicitud
+                      )
+                    "
                   >
-                    No tienes un número de celular registrado.
-                    Agrégalo primero desde Mi cuenta.
-                  </p>
+                    {{
+                      rechazandoSeguimiento
+                        ? 'Rechazando...'
+                        : 'Rechazar solicitud'
+                    }}
+                  </button>
 
                 </div>
 
@@ -3391,6 +3362,57 @@ onUnmounted(() => {
   .acciones-modal-seguimiento button {
     width: 100%;
   }
+}
+
+
+.codigo-otp-visible {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 14px;
+  border: 1px dashed #5cc6b7;
+  border-radius: 12px;
+  background: #effcf8;
+  text-align: center;
+}
+
+.codigo-otp-visible span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.codigo-otp-visible strong {
+  color: #0f766e;
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.codigo-otp-visible small {
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
+  text-align: center;
+}
+
+.boton-rechazar-seguimiento {
+  min-height: 42px;
+  margin-top: 10px;
+  padding: 0 16px;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fff7f7;
+  color: #b91c1c;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.boton-rechazar-seguimiento:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 </style>
