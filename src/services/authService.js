@@ -3,7 +3,9 @@
 // ==========================================================
 
 import {
+  browserSessionPersistence,
   createUserWithEmailAndPassword,
+  setPersistence,
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth'
@@ -21,6 +23,52 @@ import {
 } from '../firebase/firebaseConfig'
 
 
+// ==========================================================
+// PERSISTENCIA SEGURA DE LA SESIÓN
+// ==========================================================
+//
+// La sesión solamente permanece mientras esté abierta
+// la sesión actual del navegador.
+//
+// Esto evita que una cuenta profesional o de paciente
+// permanezca iniciada indefinidamente en una computadora
+// compartida.
+//
+// La sesión:
+// - sobrevive a una recarga de página;
+// - NO queda guardada permanentemente;
+// - se elimina cuando termina la sesión del navegador.
+//
+// ==========================================================
+
+const configurarPersistenciaSesion = async () => {
+
+  await setPersistence(
+    auth,
+    browserSessionPersistence
+  )
+}
+
+
+// ----------------------------------------------------------
+// APLICAR TAMBIÉN A UNA SESIÓN QUE YA ESTUVIERA GUARDADA
+// ----------------------------------------------------------
+//
+// Esto ayuda a migrar una sesión anterior que Firebase
+// hubiera guardado con persistencia local.
+//
+// ----------------------------------------------------------
+
+configurarPersistenciaSesion()
+  .catch((error) => {
+
+    console.error(
+      'No fue posible configurar la persistencia de sesión:',
+      error
+    )
+  })
+
+
 // ----------------------------------------------------------
 // FUNCIÓN AUXILIAR:
 // NORMALIZAR NOMBRE PARA BÚSQUEDA
@@ -34,6 +82,7 @@ import {
 // ----------------------------------------------------------
 
 const normalizarNombreBusqueda = (texto = '') => {
+
   return texto
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -62,7 +111,15 @@ export const registrarUsuario = async ({
   anioRegistro = null,
 }) => {
 
+  // --------------------------------------------------------
+  // CONFIGURAR SESIÓN TEMPORAL
+  // --------------------------------------------------------
+
+  await configurarPersistenciaSesion()
+
+
   // Limpiamos los datos básicos antes de utilizarlos.
+
   const nombreLimpio =
     nombreCompleto.trim()
 
@@ -90,7 +147,9 @@ export const registrarUsuario = async ({
   // --------------------------------------------------------
 
   const datosUsuario = {
-    uid: usuario.uid,
+
+    uid:
+      usuario.uid,
 
     nombreCompleto:
       nombreLimpio,
@@ -119,6 +178,7 @@ export const registrarUsuario = async ({
 
 
   if (esProfesional) {
+
     datosUsuario.especialidad =
       especialidad || null
 
@@ -126,7 +186,9 @@ export const registrarUsuario = async ({
       cedulaProfesional || null
 
     datosUsuario.cedulaVerificada =
-      Boolean(cedulaVerificada)
+      Boolean(
+        cedulaVerificada
+      )
 
     datosUsuario.profesionRegistrada =
       profesionRegistrada || null
@@ -139,8 +201,12 @@ export const registrarUsuario = async ({
 
     // Los datos del consultorio se completan después
     // desde Mi cuenta profesional.
-    datosUsuario.tieneConsultorio = false
-    datosUsuario.consultorio = null
+
+    datosUsuario.tieneConsultorio =
+      false
+
+    datosUsuario.consultorio =
+      null
   }
 
 
@@ -161,6 +227,7 @@ export const registrarUsuario = async ({
   // --------------------------------------------------------
   // 4. CREAR DIRECTORIO AUTOMÁTICO DEL PACIENTE
   // --------------------------------------------------------
+  //
   // Solo se crea para cuentas con rol "usuario".
   //
   // Gracias a esto, cuando un paciente se registra:
@@ -173,6 +240,7 @@ export const registrarUsuario = async ({
   //
   // Así el profesional podrá encontrarlo por nombre
   // sin que tengas que entrar manualmente a Firebase.
+  //
   // --------------------------------------------------------
 
   if (rol === 'usuario') {
@@ -190,7 +258,9 @@ export const registrarUsuario = async ({
         usuario.uid
       ),
       {
-        uid: usuario.uid,
+
+        uid:
+          usuario.uid,
 
         nombreCompleto:
           nombreLimpio,
@@ -207,8 +277,10 @@ export const registrarUsuario = async ({
   // --------------------------------------------------------
   // 5. CREAR PERFIL PÚBLICO DEL PROFESIONAL
   // --------------------------------------------------------
+  //
   // Esto permite que los pacientes vinculados puedan
   // consultar la información profesional necesaria.
+  //
   // --------------------------------------------------------
 
   if (esProfesional) {
@@ -220,7 +292,9 @@ export const registrarUsuario = async ({
         usuario.uid
       ),
       {
-        uid: usuario.uid,
+
+        uid:
+          usuario.uid,
 
         nombreCompleto:
           nombreLimpio,
@@ -232,7 +306,9 @@ export const registrarUsuario = async ({
           cedulaProfesional || null,
 
         cedulaVerificada:
-          Boolean(cedulaVerificada),
+          Boolean(
+            cedulaVerificada
+          ),
 
         profesionRegistrada:
           profesionRegistrada || null,
@@ -266,12 +342,26 @@ export const iniciarSesionUsuario = async ({
   contrasena,
 }) => {
 
+  // --------------------------------------------------------
+  // IMPORTANTE:
+  //
+  // La sesión solamente dura durante la sesión actual
+  // del navegador.
+  //
+  // --------------------------------------------------------
+
+  await configurarPersistenciaSesion()
+
+
   const credencial =
     await signInWithEmailAndPassword(
       auth,
-      correo.trim().toLowerCase(),
+      correo
+        .trim()
+        .toLowerCase(),
       contrasena
     )
+
 
   return credencial.user
 }
@@ -281,40 +371,47 @@ export const iniciarSesionUsuario = async ({
 // CERRAR SESIÓN
 // ----------------------------------------------------------
 
-export const cerrarSesionUsuario = async () => {
-  await signOut(auth)
-}
+export const cerrarSesionUsuario =
+  async () => {
+
+    await signOut(
+      auth
+    )
+  }
 
 
 // ----------------------------------------------------------
 // OBTENER DATOS DE FIRESTORE
 // ----------------------------------------------------------
 
-export const obtenerDatosUsuario = async (
-  uid
-) => {
+export const obtenerDatosUsuario =
+  async (
+    uid
+  ) => {
 
-  if (!uid) {
-    return null
+    if (!uid) {
+      return null
+    }
+
+
+    const referencia =
+      doc(
+        db,
+        'usuarios',
+        uid
+      )
+
+
+    const documento =
+      await getDoc(
+        referencia
+      )
+
+
+    if (!documento.exists()) {
+      return null
+    }
+
+
+    return documento.data()
   }
-
-
-  const referencia =
-    doc(
-      db,
-      'usuarios',
-      uid
-    )
-
-
-  const documento =
-    await getDoc(referencia)
-
-
-  if (!documento.exists()) {
-    return null
-  }
-
-
-  return documento.data()
-}
