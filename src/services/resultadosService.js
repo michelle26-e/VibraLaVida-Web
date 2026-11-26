@@ -69,15 +69,21 @@ const procesarRespuesta = async (respuesta) => {
 // ==========================================================
 //
 // Cuando Firebase Admin manda un Timestamp por la API,
-// llega parecido a:
+// puede llegar parecido a:
 //
 // {
 //   _seconds: 123456789,
 //   _nanoseconds: 0
 // }
 //
-// Lo convertimos para que Mi Cuenta pueda usarlo igual
-// que antes.
+// También algunas respuestas pueden usar:
+//
+// {
+//   seconds: 123456789,
+//   nanoseconds: 0
+// }
+//
+// Lo convertimos para que Vue trabaje con Date.
 // ==========================================================
 
 const convertirFecha = (fecha) => {
@@ -93,7 +99,7 @@ const convertirFecha = (fecha) => {
   }
 
 
-  // Timestamp recibido desde la API Express
+  // Timestamp recibido desde Firebase Admin
   if (
     typeof fecha._seconds === 'number'
   ) {
@@ -105,6 +111,39 @@ const convertirFecha = (fecha) => {
         1000000
       )
     )
+  }
+
+
+  // Otra forma en la que Firebase puede serializar Timestamp
+  if (
+    typeof fecha.seconds === 'number'
+  ) {
+
+    return new Date(
+      fecha.seconds * 1000 +
+      Math.floor(
+        (fecha.nanoseconds || 0) /
+        1000000
+      )
+    )
+  }
+
+
+  // Si por alguna razón llega como texto ISO
+  if (
+    typeof fecha === 'string'
+  ) {
+
+    const fechaConvertida =
+      new Date(fecha)
+
+    if (
+      !Number.isNaN(
+        fechaConvertida.getTime()
+      )
+    ) {
+      return fechaConvertida
+    }
   }
 
 
@@ -317,4 +356,182 @@ export const obtenerResultadosUsuario =
     return resultados.map(
       normalizarResultado
     )
+  }
+
+
+// ==========================================================
+// PROFESIONAL: OBTENER RESULTADOS DE UN PACIENTE
+// ==========================================================
+//
+// NUEVO.
+//
+// Esta función NO modifica las anteriores.
+//
+// GET /api/results/paciente/:pacienteUid
+//
+// Solo funcionará cuando:
+//
+// - el usuario autenticado sea profesional;
+// - el paciente exista;
+// - exista seguimiento activo.
+//
+// ==========================================================
+
+export const obtenerResultadosPaciente =
+  async (pacienteUid) => {
+
+    if (!pacienteUid) {
+      throw new Error(
+        'No se indicó el paciente.'
+      )
+    }
+
+
+    const token =
+      await obtenerToken()
+
+
+    const respuesta = await fetch(
+      `${API_BASE_URL}/api/results/paciente/${encodeURIComponent(
+        pacienteUid
+      )}`,
+      {
+        method: 'GET',
+
+        headers: {
+          Authorization:
+            `Bearer ${token}`,
+          Accept:
+            'application/json',
+        },
+      }
+    )
+
+
+    const datos =
+      await procesarRespuesta(
+        respuesta
+      )
+
+
+    const resultados =
+      Array.isArray(datos?.results)
+        ? datos.results
+        : []
+
+
+    return {
+      paciente:
+        datos?.paciente || null,
+
+      pacienteUid:
+        datos?.pacienteUid ||
+        pacienteUid,
+
+      total:
+        Number(
+          datos?.total ??
+          resultados.length
+        ),
+
+      results:
+        resultados.map(
+          normalizarResultado
+        ),
+    }
+  }
+
+
+// ==========================================================
+// PROFESIONAL: OBTENER RESULTADOS DEL PACIENTE POR TIPO
+// ==========================================================
+//
+// NUEVO.
+//
+// Ejemplos:
+//
+// obtenerResultadosPacientePorTipo(uid, 'imc')
+// obtenerResultadosPacientePorTipo(uid, 'ais')
+// obtenerResultadosPacientePorTipo(uid, 'dass_depresion')
+//
+// ==========================================================
+
+export const obtenerResultadosPacientePorTipo =
+  async (
+    pacienteUid,
+    tipo
+  ) => {
+
+    if (!pacienteUid) {
+      throw new Error(
+        'No se indicó el paciente.'
+      )
+    }
+
+
+    if (!tipo) {
+      throw new Error(
+        'No se indicó el tipo de resultado.'
+      )
+    }
+
+
+    const token =
+      await obtenerToken()
+
+
+    const respuesta = await fetch(
+      `${API_BASE_URL}/api/results/paciente/${encodeURIComponent(
+        pacienteUid
+      )}/type/${encodeURIComponent(
+        tipo
+      )}`,
+      {
+        method: 'GET',
+
+        headers: {
+          Authorization:
+            `Bearer ${token}`,
+          Accept:
+            'application/json',
+        },
+      }
+    )
+
+
+    const datos =
+      await procesarRespuesta(
+        respuesta
+      )
+
+
+    const resultados =
+      Array.isArray(datos?.results)
+        ? datos.results
+        : []
+
+
+    return {
+      paciente:
+        datos?.paciente || null,
+
+      pacienteUid:
+        datos?.pacienteUid ||
+        pacienteUid,
+
+      tipo:
+        datos?.tipo ||
+        tipo,
+
+      total:
+        Number(
+          datos?.total ??
+          resultados.length
+        ),
+
+      results:
+        resultados.map(
+          normalizarResultado
+        ),
+    }
   }

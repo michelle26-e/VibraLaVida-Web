@@ -52,6 +52,9 @@ import {
 import {
   obtenerUltimoHealthPaciente,
 } from '../services/healthConnectService'
+import {
+  obtenerResultadosPaciente,
+} from '../services/resultadosService'
 
 import logoVibra from '../assets/logo-vibra.png'
 
@@ -841,6 +844,16 @@ const pacienteDetalle = ref(null)
 const healthPaciente = ref(null)
 const cargandoHealthPaciente = ref(false)
 const mensajeErrorHealthPaciente = ref('')
+
+// ----------------------------------------------------------
+// RESULTADOS DEL PACIENTE
+// ----------------------------------------------------------
+
+const pacienteResultadosSeleccionado = ref(null)
+const resultadosPaciente = ref([])
+const cargandoResultadosPaciente = ref(false)
+const mensajeErrorResultadosPaciente = ref('')
+const filtroResultados = ref('todos')
 
 // Modal para buscar pacientes y solicitar seguimiento
 const mostrarModalPaciente = ref(false)
@@ -2308,6 +2321,194 @@ const guardarConsentimientoLegal = async () => {
     guardandoConsentimientoLegal.value = false
   }
 }
+
+// ----------------------------------------------------------
+// RESULTADOS DEL PACIENTE
+// ----------------------------------------------------------
+
+const cargarResultadosPaciente = async (paciente) => {
+  if (!paciente?.uid) {
+    resultadosPaciente.value = []
+    pacienteResultadosSeleccionado.value = null
+    return
+  }
+
+  cargandoResultadosPaciente.value = true
+  mensajeErrorResultadosPaciente.value = ''
+  pacienteResultadosSeleccionado.value = paciente
+
+  try {
+    const respuesta =
+      await obtenerResultadosPaciente(paciente.uid)
+
+    resultadosPaciente.value =
+      Array.isArray(respuesta?.results)
+        ? respuesta.results
+        : []
+
+    if (respuesta?.paciente) {
+      pacienteResultadosSeleccionado.value = {
+        ...paciente,
+        ...respuesta.paciente,
+      }
+    }
+  } catch (error) {
+    console.error(
+      'Error al cargar resultados del paciente:',
+      error
+    )
+
+    resultadosPaciente.value = []
+    mensajeErrorResultadosPaciente.value =
+      error.message ||
+      'No fue posible cargar los resultados del paciente.'
+  } finally {
+    cargandoResultadosPaciente.value = false
+  }
+}
+
+const seleccionarPacienteResultados = async (evento) => {
+  const uid = evento.target.value
+
+  if (!uid) {
+    pacienteResultadosSeleccionado.value = null
+    resultadosPaciente.value = []
+    mensajeErrorResultadosPaciente.value = ''
+    return
+  }
+
+  const paciente =
+    pacientes.value.find(
+      (item) => item.uid === uid
+    )
+
+  if (!paciente) {
+    return
+  }
+
+  filtroResultados.value = 'todos'
+  await cargarResultadosPaciente(paciente)
+}
+
+const abrirResultadosPaciente = async (paciente) => {
+  opcionActiva.value = 'resultados'
+  filtroResultados.value = 'todos'
+
+  await cargarResultadosPaciente(paciente)
+}
+
+const formatearFechaResultado = (fecha) => {
+  if (!fecha) {
+    return 'Sin fecha'
+  }
+
+  const objetoFecha =
+    fecha instanceof Date
+      ? fecha
+      : new Date(fecha)
+
+  if (Number.isNaN(objetoFecha.getTime())) {
+    return 'Sin fecha'
+  }
+
+  return objetoFecha.toLocaleDateString(
+    'es-MX',
+    {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }
+  )
+}
+
+const nombreTipoResultado = (tipo) => {
+  const tipos = {
+    imc: 'Índice de masa corporal',
+    dass21: 'DASS-21',
+    dass_depresion: 'DASS-21 · Depresión',
+    dass_ansiedad: 'DASS-21 · Ansiedad',
+    dass_estres: 'DASS-21 · Estrés',
+    insomnio: 'AIS · Calidad del sueño',
+    ais: 'AIS · Calidad del sueño',
+    calorias: 'Calorías',
+    riesgo_cardiometabolico: 'Riesgo cardiometabólico',
+    riesgo_cardiovascular: 'Riesgo cardiovascular',
+    habitos_saludables: 'Hábitos saludables',
+  }
+
+  return tipos[tipo] || tipo || 'Resultado'
+}
+
+const valorResultado = (resultado) => {
+  if (resultado?.imc != null) {
+    return `${resultado.imc}`
+  }
+
+  if (resultado?.puntajeTotal != null) {
+    return `${resultado.puntajeTotal} puntos`
+  }
+
+  if (resultado?.puntajeFinal != null) {
+    return `${resultado.puntajeFinal} puntos`
+  }
+
+  if (resultado?.puntaje != null) {
+    return `${resultado.puntaje}`
+  }
+
+  if (resultado?.porcentaje != null) {
+    return `${resultado.porcentaje}%`
+  }
+
+  if (resultado?.nivelRiesgo) {
+    return resultado.nivelRiesgo
+  }
+
+  if (resultado?.clasificacion) {
+    return resultado.clasificacion
+  }
+
+  if (resultado?.categoria) {
+    return resultado.categoria
+  }
+
+  return 'Registro disponible'
+}
+
+const resultadosPacienteFiltrados = computed(() => {
+  if (filtroResultados.value === 'todos') {
+    return resultadosPaciente.value
+  }
+
+  if (filtroResultados.value === 'dass') {
+    return resultadosPaciente.value.filter(
+      (resultado) =>
+        resultado.tipo === 'dass21' ||
+        String(resultado.tipo || '').startsWith('dass_')
+    )
+  }
+
+  if (filtroResultados.value === 'ais') {
+    return resultadosPaciente.value.filter(
+      (resultado) =>
+        resultado.tipo === 'insomnio' ||
+        resultado.tipo === 'ais'
+    )
+  }
+
+  if (filtroResultados.value === 'riesgo_cardiovascular') {
+    return resultadosPaciente.value.filter(
+      (resultado) =>
+        resultado.tipo === 'riesgo_cardiovascular' ||
+        resultado.tipo === 'riesgo_cardiometabolico'
+    )
+  }
+
+  return resultadosPaciente.value.filter(
+    (resultado) =>
+      resultado.tipo === filtroResultados.value
+  )
+})
 
 // ----------------------------------------------------------
 // NAVEGACIÓN INTERNA
@@ -4285,7 +4486,7 @@ onUnmounted(() => {
 
                 <button
                   type="button"
-                  @click="seleccionarOpcion('resultados')"
+                  @click="abrirResultadosPaciente(pacienteDetalle)"
                 >
                   Ver todos
                 </button>
@@ -4680,39 +4881,284 @@ onUnmounted(() => {
 
         <header class="encabezado-panel">
           <div>
-            <span class="etiqueta-panel">
-              Seguimiento
-            </span>
-
-            <h1>
-              Resultados
-            </h1>
-
+            <span class="etiqueta-panel">Seguimiento</span>
+            <h1>Resultados</h1>
             <p>
-              Los resultados aparecerán cuando
-              existan pacientes vinculados.
+              Consulta el historial de evaluaciones registradas
+              por cada paciente.
             </p>
           </div>
         </header>
 
-        <section class="estado-vacio-doctor">
-
-          <div class="icono-vacio-doctor">
-            ▥
-          </div>
-
+        <section
+          v-if="pacientes.length === 0"
+          class="estado-vacio-doctor"
+        >
+          <div class="icono-vacio-doctor">▥</div>
           <div>
-            <h2>
-              Sin resultados disponibles
-            </h2>
-
+            <h2>Sin pacientes vinculados</h2>
             <p>
-              Todavía no hay información clínica
-              vinculada a esta cuenta profesional.
+              Primero debes tener un paciente con seguimiento activo.
             </p>
           </div>
-
         </section>
+
+        <template v-else>
+
+          <section class="resultados-selector-paciente">
+            <div>
+              <span>Paciente</span>
+              <strong>Selecciona el expediente que deseas consultar</strong>
+            </div>
+
+            <select
+              :value="pacienteResultadosSeleccionado?.uid || ''"
+              @change="seleccionarPacienteResultados"
+            >
+              <option value="">Selecciona un paciente</option>
+
+              <option
+                v-for="paciente in pacientes"
+                :key="paciente.uid"
+                :value="paciente.uid"
+              >
+                {{
+                  paciente.nombreCompleto ||
+                  paciente.nombre ||
+                  'Paciente'
+                }}
+              </option>
+            </select>
+          </section>
+
+          <section
+            v-if="
+              !pacienteResultadosSeleccionado &&
+              !cargandoResultadosPaciente
+            "
+            class="estado-vacio-doctor"
+          >
+            <div class="icono-vacio-doctor">◉</div>
+            <div>
+              <h2>Selecciona un paciente</h2>
+              <p>
+                Podrás consultar todas sus evaluaciones registradas
+                en Vibra la Vida.
+              </p>
+            </div>
+          </section>
+
+          <section
+            v-else-if="cargandoResultadosPaciente"
+            class="estado-vacio-doctor"
+          >
+            <div class="icono-vacio-doctor">↻</div>
+            <div>
+              <h2>Cargando resultados...</h2>
+              <p>Consultando el historial del paciente.</p>
+            </div>
+          </section>
+
+          <section
+            v-else-if="mensajeErrorResultadosPaciente"
+            class="estado-vacio-doctor"
+          >
+            <div class="icono-vacio-doctor">!</div>
+            <div>
+              <h2>No fue posible cargar los resultados</h2>
+              <p>{{ mensajeErrorResultadosPaciente }}</p>
+            </div>
+          </section>
+
+          <template v-else-if="pacienteResultadosSeleccionado">
+
+            <section class="resultados-paciente-cabecera">
+              <div class="resultados-paciente-identidad">
+                <div class="resultados-paciente-avatar">
+                  {{
+                    (
+                      pacienteResultadosSeleccionado.nombreCompleto ||
+                      'P'
+                    )
+                      .trim()
+                      .charAt(0)
+                      .toUpperCase()
+                  }}
+                </div>
+
+                <div>
+                  <span>Expediente del paciente</span>
+                  <h2>
+                    {{
+                      pacienteResultadosSeleccionado.nombreCompleto ||
+                      'Paciente'
+                    }}
+                  </h2>
+                </div>
+              </div>
+            </section>
+
+            <section class="resultados-filtros">
+              <button
+                type="button"
+                :class="{ activo: filtroResultados === 'todos' }"
+                @click="filtroResultados = 'todos'"
+              >Todos</button>
+
+              <button
+                type="button"
+                :class="{ activo: filtroResultados === 'imc' }"
+                @click="filtroResultados = 'imc'"
+              >IMC</button>
+
+              <button
+                type="button"
+                :class="{ activo: filtroResultados === 'dass' }"
+                @click="filtroResultados = 'dass'"
+              >DASS-21</button>
+
+              <button
+                type="button"
+                :class="{ activo: filtroResultados === 'ais' }"
+                @click="filtroResultados = 'ais'"
+              >AIS</button>
+
+              <button
+                type="button"
+                :class="{ activo: filtroResultados === 'calorias' }"
+                @click="filtroResultados = 'calorias'"
+              >Calorías</button>
+
+              <button
+                type="button"
+                :class="{
+                  activo: filtroResultados === 'riesgo_cardiovascular'
+                }"
+                @click="filtroResultados = 'riesgo_cardiovascular'"
+              >Riesgo cardiovascular</button>
+            </section>
+
+            <section
+              v-if="resultadosPacienteFiltrados.length === 0"
+              class="estado-vacio-doctor"
+            >
+              <div class="icono-vacio-doctor">▥</div>
+              <div>
+                <h2>Sin registros en esta categoría</h2>
+                <p>
+                  Cuando el paciente realice una evaluación,
+                  aparecerá aquí.
+                </p>
+              </div>
+            </section>
+
+            <section
+              v-else
+              class="resultados-historial"
+            >
+              <article
+                v-for="resultado in resultadosPacienteFiltrados"
+                :key="resultado.id"
+                class="resultado-historial-card"
+              >
+                <div class="resultado-historial-fecha">
+                  <span>Fecha</span>
+                  <strong>
+                    {{
+                      formatearFechaResultado(
+                        resultado.fechaRegistro ||
+                        resultado.fecha
+                      )
+                    }}
+                  </strong>
+                </div>
+
+                <div class="resultado-historial-contenido">
+                  <div class="resultado-historial-titulo">
+                    <div>
+                      <span>
+                        {{ nombreTipoResultado(resultado.tipo) }}
+                      </span>
+                      <strong>
+                        {{ valorResultado(resultado) }}
+                      </strong>
+                    </div>
+
+                    <span
+                      v-if="
+                        resultado.clasificacion ||
+                        resultado.categoria ||
+                        resultado.nivel
+                      "
+                      class="resultado-historial-clasificacion"
+                    >
+                      {{
+                        resultado.clasificacion ||
+                        resultado.categoria ||
+                        resultado.nivel
+                      }}
+                    </span>
+                  </div>
+
+                  <p
+                    v-if="resultado.descripcion"
+                    class="resultado-historial-descripcion"
+                  >
+                    {{ resultado.descripcion }}
+                  </p>
+
+                  <div
+                    v-if="resultado.tipo === 'imc'"
+                    class="resultado-historial-detalles"
+                  >
+                    <span v-if="resultado.pesoKg != null">
+                      Peso: {{ resultado.pesoKg }} kg
+                    </span>
+
+                    <span v-if="resultado.alturaCm != null">
+                      Estatura: {{ resultado.alturaCm }} cm
+                    </span>
+
+                    <span v-if="resultado.imc != null">
+                      IMC: {{ resultado.imc }}
+                    </span>
+                  </div>
+
+                  <div
+                    v-if="
+                      (resultado.tipo === 'dass21' ||
+                      String(resultado.tipo || '').startsWith('dass_'))
+                    "
+                    class="resultado-historial-detalles"
+                  >
+                    <span v-if="resultado.puntaje != null">
+                      Puntaje: {{ resultado.puntaje }}
+                    </span>
+
+                    <span v-if="resultado.clasificacion">
+                      Nivel: {{ resultado.clasificacion }}
+                    </span>
+                  </div>
+
+                  <div
+                    v-if="resultado.tipo === 'ais' || resultado.tipo === 'insomnio'"
+                    class="resultado-historial-detalles"
+                  >
+                    <span v-if="resultado.puntaje != null">
+                      Puntaje AIS: {{ resultado.puntaje }}
+                    </span>
+
+                    <span v-if="resultado.clasificacion">
+                      Clasificación: {{ resultado.clasificacion }}
+                    </span>
+                  </div>
+                </div>
+              </article>
+            </section>
+
+          </template>
+
+        </template>
 
       </template>
 
@@ -6627,3 +7073,225 @@ onUnmounted(() => {
 <style
   scoped
   src="../assets/styles/panelDoctor.css"></style>
+
+<style scoped>
+/* ==========================================================
+   RESULTADOS DEL PACIENTE
+   Este bloque es adicional y no modifica panelDoctor.css.
+   ========================================================== */
+
+.resultados-selector-paciente {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 24px;
+  margin-bottom: 20px;
+  background: #ffffff;
+  border: 1px solid #dde7ea;
+  border-radius: 18px;
+}
+
+.resultados-selector-paciente > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.resultados-selector-paciente span {
+  font-size: 13px;
+  color: #6c7b83;
+}
+
+.resultados-selector-paciente strong {
+  color: #082449;
+}
+
+.resultados-selector-paciente select {
+  min-width: 280px;
+  padding: 11px 14px;
+  border: 1px solid #d5e2e6;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #082449;
+  font: inherit;
+}
+
+.resultados-paciente-cabecera {
+  padding: 20px 24px;
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #dde7ea;
+  border-radius: 18px;
+}
+
+.resultados-paciente-identidad {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.resultados-paciente-avatar {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #dff7f3;
+  color: #008c87;
+  font-weight: 800;
+}
+
+.resultados-paciente-identidad span {
+  font-size: 12px;
+  color: #7a8a91;
+}
+
+.resultados-paciente-identidad h2 {
+  margin: 2px 0;
+  color: #082449;
+}
+
+.resultados-paciente-identidad p {
+  margin: 0;
+  color: #708089;
+  font-size: 13px;
+}
+
+.resultados-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.resultados-filtros button {
+  border: 1px solid #d9e5e8;
+  background: #ffffff;
+  color: #50646f;
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.resultados-filtros button.activo {
+  background: #dff7f3;
+  border-color: #bfece5;
+  color: #007f79;
+  font-weight: 700;
+}
+
+.resultados-historial {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resultado-historial-card {
+  display: grid;
+  grid-template-columns: 145px 1fr;
+  gap: 22px;
+  padding: 18px 20px;
+  background: #ffffff;
+  border: 1px solid #dde7ea;
+  border-radius: 16px;
+}
+
+.resultado-historial-fecha {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 18px;
+  border-right: 1px solid #edf2f3;
+}
+
+.resultado-historial-fecha span {
+  font-size: 12px;
+  color: #819098;
+}
+
+.resultado-historial-fecha strong {
+  color: #082449;
+}
+
+.resultado-historial-contenido {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.resultado-historial-titulo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resultado-historial-titulo > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.resultado-historial-titulo span {
+  font-size: 13px;
+  color: #687b85;
+}
+
+.resultado-historial-titulo strong {
+  font-size: 18px;
+  color: #082449;
+}
+
+.resultado-historial-clasificacion {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #e9f8ef;
+  color: #178549 !important;
+  font-size: 12px !important;
+  font-weight: 700;
+}
+
+.resultado-historial-descripcion {
+  margin: 0;
+  color: #667984;
+  line-height: 1.5;
+}
+
+.resultado-historial-detalles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.resultado-historial-detalles span {
+  padding: 6px 9px;
+  background: #f3f7f8;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #48606c;
+}
+
+@media (max-width: 800px) {
+  .resultados-selector-paciente {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .resultados-selector-paciente select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .resultado-historial-card {
+    grid-template-columns: 1fr;
+  }
+
+  .resultado-historial-fecha {
+    border-right: 0;
+    border-bottom: 1px solid #edf2f3;
+    padding-right: 0;
+    padding-bottom: 12px;
+  }
+}
+</style>

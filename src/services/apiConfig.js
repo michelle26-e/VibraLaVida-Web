@@ -10,7 +10,7 @@
 
 const apiUrl = (
   import.meta.env.VITE_API_URL ||
-  'https://api-vibra-la-vida.onrender.com'
+  'https://api-vibra-la-vida-test.onrender.com'
 ).replace(/\/$/, '')
 
 export const API_BASE_URL = apiUrl

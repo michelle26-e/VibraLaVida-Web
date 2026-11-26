@@ -1901,7 +1901,7 @@ const abrirTarjeta = (tarjeta) => {
             Navega a través de nuestros temas para conocer más sobre el cuidado
             del cuerpo, prevención de riesgos y la importancia de la salud
             mental, con información pensada especialmente para jóvenes de 15 a
-            20 años.
+            24 años.
           </p>
 
           <button class="boton-principal" @click="irAlTemario">
