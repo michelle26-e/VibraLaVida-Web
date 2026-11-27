@@ -27,9 +27,8 @@ const props = defineProps({
 // ============================================================================
 
 const obtenerNombreResultado = () => {
-  if (props.resultado.nombreHerramienta) {
-    return props.resultado.nombreHerramienta
-  }
+  const nombre = props.resultado.nombreHerramienta || props.resultado.datosExtra?.nombreHerramienta
+  if (nombre) return nombre
 
   const nombres = {
     imc: 'Calculadora de IMC',
@@ -147,6 +146,7 @@ const formatearFecha = () => {
 // ============================================================================
 
 const formatearNumero = (valor) => {
+  if (valor == null || (typeof valor === 'string' && !valor.trim())) return null
   const numero = Number(valor)
 
   if (!Number.isFinite(numero)) {
@@ -253,64 +253,52 @@ const obtenerEtiquetasResultado = () => {
   // CALORÍAS
   // --------------------------------------------------------------------------
 
+  // Solo lectura: los campos específicos pueden venir planos o en datosExtra.
+  const extra = resultado.datosExtra || {}
+  const campo = (nombre) => extra[nombre] ?? resultado[nombre]
+  const etiqueta = (texto, clase = 'chip-valor') => ({ texto, clase })
+  const puntos = (valor, maximo) => {
+    const n = formatearNumero(valor)
+    const m = formatearNumero(maximo)
+    return n === null ? null : m === null ? n : `${n}/${m}`
+  }
+
   if (resultado.tipo === 'calorias') {
-    const calorias =
-      formatearNumero(
-        resultado.calorias ??
-        resultado.puntaje
-      )
-
-    return [
-      {
-        texto:
-          calorias !== null
-            ? `${calorias} kcal/día`
-            : 'Estimación registrada',
-        clase: 'chip-verde',
-      },
-    ]
+    const etiquetas = []
+    const mantenimiento = formatearNumero(campo('caloriasMantenimiento') ?? campo('calorias') ?? resultado.puntaje)
+    if (mantenimiento !== null) etiquetas.push(etiqueta(`Mantenimiento: ${mantenimiento} kcal/día`, 'chip-verde'))
+    for (const [nombre, titulo] of [['caloriasPerderPeso', 'Perder peso'], ['caloriasGanarPeso', 'Ganar peso']]) {
+      const valor = formatearNumero(campo(nombre))
+      if (valor !== null) etiquetas.push(etiqueta(`${titulo}: ${valor} kcal/día`, 'chip-azul'))
+    }
+    return etiquetas.length ? etiquetas : [etiqueta(campo('resultado') || 'Estimación registrada', 'chip-neutro')]
   }
 
-
-  // --------------------------------------------------------------------------
-  // DASS-21
-  // --------------------------------------------------------------------------
-
-  if (resultado.tipo === 'dass21') {
-    return [
-      {
-        texto: `Depresión: ${resultado.nivelDepresion || 'N/A'}`,
-        clase: obtenerClaseCategoria(resultado.nivelDepresion),
-      },
-      {
-        texto: `Ansiedad: ${resultado.nivelAnsiedad || 'N/A'}`,
-        clase: obtenerClaseCategoria(resultado.nivelAnsiedad),
-      },
-      {
-        texto: `Estrés: ${resultado.nivelEstres || 'N/A'}`,
-        clase: obtenerClaseCategoria(resultado.nivelEstres),
-      },
-    ]
+  if (resultado.tipo === 'dass21' || String(resultado.tipo || '').startsWith('dass_')) {
+    const dimension = campo('dimension') || campo('dimensionTitulo')
+    const directo = puntos(campo('puntajeDirecto'), 21)
+    const final = puntos(campo('puntajeFinal') ?? (dimension ? resultado.puntaje : null), campo('puntajeMaximo') ?? 42)
+    if (!dimension && directo === null && final === null) {
+      const antiguas = [['nivelDepresion', 'Depresión'], ['nivelAnsiedad', 'Ansiedad'], ['nivelEstres', 'Estrés']]
+        .filter(([nombre]) => campo(nombre))
+        .map(([nombre, titulo]) => etiqueta(`${titulo}: ${campo(nombre)}`, obtenerClaseCategoria(campo(nombre))))
+      if (antiguas.length) return antiguas
+    }
+    const etiquetas = []
+    if (directo !== null) etiquetas.push(etiqueta(`Directo: ${directo}`))
+    if (final !== null) etiquetas.push(etiqueta(`Final: ${final}`, 'chip-azul'))
+    const nivel = campo('nivel') || resultado.clasificacion || resultado.categoria
+    if (nivel) etiquetas.push(etiqueta(nivel, obtenerClaseCategoria(nivel)))
+    return etiquetas.length ? etiquetas : [etiqueta('Resultado registrado', 'chip-neutro')]
   }
 
-
-  // --------------------------------------------------------------------------
-  // INSOMNIO DE ATENAS
-  // --------------------------------------------------------------------------
-
-  if (resultado.tipo === 'insomnio') {
-    const texto =
-      resultado.interpretacion ||
-      resultado.categoria ||
-      resultado.clasificacion ||
-      'Resultado de sueño registrado'
-
-    return [
-      {
-        texto,
-        clase: obtenerClaseCategoria(texto),
-      },
-    ]
+  if (resultado.tipo === 'insomnio' || resultado.tipo === 'ais') {
+    const nivel = campo('nivel') || campo('interpretacion') || resultado.clasificacion || resultado.categoria
+    const puntaje = puntos(campo('puntajeTotal') ?? resultado.puntaje, campo('puntajeMaximo') ?? 24)
+    const etiquetas = []
+    if (puntaje !== null) etiquetas.push(etiqueta(`${puntaje} puntos`))
+    if (nivel) etiquetas.push(etiqueta(nivel, obtenerClaseCategoria(nivel)))
+    return etiquetas.length ? etiquetas : [etiqueta('Resultado de sueño registrado', 'chip-neutro')]
   }
 
 

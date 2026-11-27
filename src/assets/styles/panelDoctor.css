@@ -5328,3 +5328,280 @@
     margin-bottom: 14px;
   }
 }
+
+/* ==========================================================
+   HISTORIAL DE CITAS - DISEÑO LIMPIO 2026
+   ========================================================== */
+
+.historial-citas-doctor {
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 30px 34px 44px;
+  background:
+    radial-gradient(circle at top right, rgba(14, 165, 164, 0.055), transparent 280px),
+    #f7faf9;
+}
+
+.historial-citas-cabecera {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+  padding: 24px 26px;
+  border: 1px solid #e1eaee;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 8px 26px rgba(24, 62, 91, 0.045);
+}
+
+.historial-citas-cabecera > div > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: #e6f7ef;
+  color: #13825f;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.historial-citas-cabecera h2 {
+  margin: 9px 0 5px;
+  color: #153b61;
+  font-size: clamp(1.45rem, 2vw, 1.9rem);
+  line-height: 1.15;
+}
+
+.historial-citas-cabecera p {
+  max-width: 690px;
+  margin: 0;
+  color: #73879a;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.historial-citas-cabecera > button {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 0 15px;
+  border: 1px solid #cfe0e6;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #0b7f79;
+  font: inherit;
+  font-size: 0.79rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.historial-citas-cabecera > button:hover {
+  border-color: #8fcfc9;
+  background: #f2fbfa;
+  transform: translateY(-1px);
+  box-shadow: 0 7px 16px rgba(21, 93, 102, 0.08);
+}
+
+.historial-citas-vacio {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 28px;
+  border: 1px dashed #cbdde3;
+  border-radius: 18px;
+  background: #ffffff;
+  text-align: center;
+}
+
+.historial-citas-vacio::before {
+  content: "🗓️";
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 5px;
+  border-radius: 14px;
+  background: #eaf8f5;
+  font-size: 1.25rem;
+}
+
+.historial-citas-vacio strong {
+  color: #244a67;
+  font-size: 0.95rem;
+}
+
+.historial-citas-vacio span {
+  color: #8595a4;
+  font-size: 0.8rem;
+}
+
+.historial-citas-lista {
+  display: grid;
+  gap: 14px;
+}
+
+.historial-cita-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #e0e9ee;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 7px 22px rgba(24, 62, 91, 0.04);
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.historial-cita-item:hover {
+  border-color: #cddfe5;
+  box-shadow: 0 11px 28px rgba(24, 62, 91, 0.07);
+  transform: translateY(-1px);
+}
+
+.historial-cita-fecha {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 22px 20px;
+  border-right: 1px solid #e9eff2;
+  background: linear-gradient(180deg, #f4fbfa 0%, #f9fcfc 100%);
+}
+
+.historial-cita-fecha strong,
+.historial-cita-fecha span {
+  display: block;
+}
+
+.historial-cita-fecha strong {
+  color: #183f62;
+  font-size: 0.92rem;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.historial-cita-fecha span {
+  width: fit-content;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #e5f7f4;
+  color: #087f76;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.historial-cita-contenido {
+  min-width: 0;
+  padding: 20px 22px;
+}
+
+.historial-cita-titulo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.historial-cita-titulo > div {
+  min-width: 0;
+}
+
+.historial-cita-titulo > div > strong,
+.historial-cita-titulo > div > span {
+  display: block;
+}
+
+.historial-cita-titulo > div > strong {
+  color: #173d62;
+  font-size: 1rem;
+  font-weight: 850;
+}
+
+.historial-cita-titulo > div > span {
+  margin-top: 5px;
+  color: #61788e;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.historial-cita-datos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.historial-cita-datos span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 29px;
+  padding: 0 10px;
+  border: 1px solid #e4ebef;
+  border-radius: 9px;
+  background: #f7fafb;
+  color: #526c82;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.historial-cita-notas {
+  margin: 13px 0 0;
+  padding: 11px 13px;
+  border-left: 3px solid #9ccfc9;
+  border-radius: 0 9px 9px 0;
+  background: #f7fbfb;
+  color: #667e92;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.historial-cita-item .estado-cita-doctor {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+  .historial-citas-doctor {
+    height: auto;
+    min-height: 100vh;
+    padding: 20px 14px 32px;
+  }
+
+  .historial-citas-cabecera {
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .historial-citas-cabecera > button {
+    width: 100%;
+  }
+
+  .historial-cita-item {
+    grid-template-columns: 1fr;
+  }
+
+  .historial-cita-fecha {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    border-right: 0;
+    border-bottom: 1px solid #e9eff2;
+  }
+
+  .historial-cita-titulo {
+    flex-direction: column;
+  }
+}
